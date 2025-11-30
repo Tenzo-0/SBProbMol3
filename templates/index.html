@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+    /* Step-specific sidebars/panels visibility */
+    #sidebar-step-2, #sidebar-step-3, #sidebar-step-4, #panel-pockets { display: none; }
+    .info-container {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        margin-right: 15px;
+    }
+    /* Pocket Definition styles (minimal) */
+    .pocket-methods { border-top: 1px solid var(--border-color); padding-top: 1.5rem; margin-bottom: 1.5rem; }
+    .method-card { display:flex; align-items:center; padding:0.75rem; cursor:pointer; border-radius:8px; transition:all .2s; margin-bottom:0.5rem; border:1px solid transparent; }
+    .method-card:hover { background-color: var(--hover-bg); }
+    .method-card.active { background-color: rgba(74,144,226,.1); border-color: var(--accent-blue); }
+    .method-icon { width:32px; height:32px; background-color: var(--card-bg); border-radius:6px; display:flex; align-items:center; justify-content:center; margin-right:.75rem; }
+    .method-card.active .method-icon { background-color: var(--accent-blue); color:#fff; }
+    .method-title { font-size:.875rem; font-weight:600; color: var(--text-primary); }
+    .method-subtitle { font-size:.75rem; color: var(--text-muted); }
+    .detection-controls { border-top: 1px solid var(--border-color); padding-top:1rem; }
+    .pockets-panel { background-color: var(--secondary-bg); border-left:1px solid var(--border-color); padding:1.5rem; height:100vh; overflow-y:auto; }
+    .pockets-card { background-color: var(--card-bg); border:1px solid var(--border-color); border-radius:8px; overflow:hidden; }
+    .pockets-header { padding:1rem; border-bottom:1px solid var(--border-color); background-color: rgba(255,255,255,0.02); display:flex; justify-content:space-between; align-items:center; }
+    .pockets-content { padding:1rem; }
+    .pocket-item { padding:.75rem; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; transition:all .2s; margin-bottom:.5rem; }
+    .pocket-item:hover, .pocket-item.selected { border-color: var(--accent-blue); background-color: rgba(74,144,226,.1); }
+    .pocket-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:.25rem; }
+    .pocket-name { font-weight:600; color: var(--text-primary); font-size:.875rem; }
+    .pocket-score { color: var(--accent-teal); font-weight:600; font-size:.75rem; }
+    .pocket-info { display:flex; justify-content:space-between; font-size:.75rem; color: var(--text-muted); }
+    .residue-tags { display:flex; flex-wrap:wrap; gap:.25rem; }
+    .residue-tag { background-color: var(--hover-bg); color: var(--text-primary); padding:.125rem .375rem; border-radius:4px; font-size:.625rem; font-weight:500; }
+
+    /* Sampling form (minimal grid) */
+    .parameter-group { margin-bottom:1.0rem; display:grid; grid-template-columns: 140px 1fr; gap: .75rem; align-items:center; }
+    .parameter-label { font-size:.875rem; color: var(--text-primary); font-weight:500; margin:0; }
+    .parameter-control { display:flex; flex-direction:column; gap:.5rem; }
+    .range-labels { display:flex; justify-content:space-between; font-size:.75rem; color: var(--text-muted); }
+    .settings-actions { margin-top: 1rem; display:flex; gap:.75rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid h-100">
+    <div class="row h-100">
+        <!-- Sidebar -->
+        <div class="col-md-3 col-lg-2 sidebar">
+            <div class="sidebar-content">
+                <!-- Header -->
+                <div class="sidebar-header">
+                    <div class="d-flex align-items-center mb-4">
+                        <div class="logo-icon me-2">
+                            <img src="/static/img/logo.png" alt="Logo" />
+                        </div>
+                        <div>
+                            <h5 class="mb-0 text-white fw-bold">SBProbMol3</h5>
+                            <small class="step-subtitle" style="padding-bot: 10px">Drug Design Platform</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Workflow Steps -->
+                <div class="workflow-section">
+                    <h6 class="workflow-title">WORKFLOW</h6>
+                    
+                    <div class="workflow-step active" data-step="1">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <div class="step-title">Target Selection</div>
+                            <div class="step-subtitle">Choose protein target</div>
+                        </div>
+                    </div>
+                    
+                    <div class="workflow-step" data-step="2">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <div class="step-title">Pocket Definition</div>
+                            <div class="step-subtitle">Define binding site</div>
+                        </div>
+                    </div>
+                    
+                    <div class="workflow-step" data-step="3">
+                        <div class="step-number">3</div>
+                        <div class="step-content">
+                            <div class="step-title">Sampling Parameters</div>
+                            <div class="step-subtitle">Configure generation</div>
+                        </div>
+                    </div>
+                    
+                    <div class="workflow-step" data-step="4">
+                        <div class="step-number">4</div>
+                        <div class="step-content">
+                            <div class="step-title">Generation & Results</div>
+                            <div class="step-subtitle">View generated molecules</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 1: Target Selection -->
+                <div class="target-selection" id="sidebar-step-1">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h6 class="section-title mb-0">Select Target Protein</h6>
+                        <button type="button" id="add-new-btn" class="btn btn-outline-primary btn-sm">
+                            <i data-feather="plus" class="me-1"></i>Add New
+                        </button>
+                    </div>
+                    
+                    <!-- Hidden file input for selecting PDB files -->
+                    <input type="file" id="pdb-file-input" accept=".pdb" style="display:none" />
+                    
+                    <div class="search-box mb-3">
+                        <input type="text" id="protein-search" class="form-control" placeholder="Search PDB ID or protein name...">
+                        <i data-feather="search" class="search-icon"></i>
+                    </div>
+                    
+                    <div class="protein-list" id="protein-list">
+                        {% for protein in proteins %}
+                        <div class="protein-card" data-protein-id="{{ protein.id }}" data-pdb-id="{{ protein.pdb_id }}" {% if protein.filename %}data-filename="{{ protein.filename }}"{% endif %}>
+                            <div class="protein-header">
+                                <h6 class="protein-name">{{ protein.name }}</h6>
+                                <span class="pdb-id">{{ protein.pdb_id }}</span>
+                            </div>
+                            <p class="protein-description">{{ protein.description }}</p>
+                            <div class="protein-tags">
+                                {% for tag in protein.tags %}
+                                <span class="tag">{{ tag }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <button class="btn btn-primary btn-sm mt-3" id="continue-step1" disabled>
+                        Continue to Pocket Definition
+                    </button>
+                </div>
+
+                <!-- Step 2: Pocket Definition (Sidebar) -->
+                <div id="sidebar-step-2">
+                    <div class="pocket-methods">
+                        <h6 class="section-title">Pocket Definition</h6>
+                        <div class="method-card active" data-method="manual">
+                            <div class="method-icon"><i data-feather="edit-3"></i></div>
+                            <div>
+                                <div class="method-title">Reference Ligands</div>
+                                <div class="method-subtitle">Define pocket center and radius</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="manual-input" class="mt-3">
+                        <div class="form-group mb-3">
+                            <label class="form-label">Reference Ligand / Pocket</label>
+                            <input id="manual-ref" type="file" class="form-control form-control-sm" accept=".pdb,.mol,.sdf" />
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary btn-sm w-100 mt-3" id="continue-step2" disabled>
+                        Continue to Parameters
+                    </button>
+                </div>
+
+                <!-- Step 3: Sampling Parameters (Sidebar) -->
+                <div id="sidebar-step-3">
+                    <h6 class="section-title">Sampling Parameters</h6>
+                    <form id="sampling-form">
+                        <div class="parameter-group">
+                            <label class="parameter-label">n_samples:</label>
+                            <div class="parameter-control">
+                                <input type="range" class="form-range" id="n-samples" name="n_samples" min="1" max="100" value="10" step="1">
+                                <div class="range-labels"><span>1</span><span id="n-samples-value">10</span><span>100</span></div>
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">Ligand nodes (legend_modes):</label>
+                            <div class="parameter-control">
+                                <input type="number" class="form-control parameter-input" id="legend-modes" name="legend_modes" value="20" min="1" max="100">
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">model:</label>
+                            <div class="parameter-control">
+                                <select class="form-select parameter-select" id="model" name="model">
+                                    <option value="Conditional model (Binding MOAD)" selected>Conditional model (Binding MOAD)</option>
+                                    <option value="Unconditional model">Unconditional model</option>
+                                    <option value="Fragment-based model">Fragment-based model</option>
+                                    <option value="Pharmacophore model">Pharmacophore model</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">timesteps:</label>
+                            <div class="parameter-control">
+                                <input type="range" class="form-range" id="timesteps" name="timesteps" min="10" max="500" value="100" step="10">
+                                <div class="range-labels"><span>10</span><span id="timesteps-value">100</span><span>500</span></div>
+                            </div>
+                        </div>
+                        <h6 class="section-subtitle mt-3">Inpainting parameters</h6>
+                        <div class="parameter-group">
+                            <label class="parameter-label">resamplings:</label>
+                            <div class="parameter-control">
+                                <input type="number" class="form-control parameter-input" id="resamplings" name="resamplings" value="1" min="1" max="10">
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">jump_length:</label>
+                            <div class="parameter-control">
+                                <input type="number" class="form-control parameter-input" id="jump-length" name="jump_length" value="1" min="1" max="20">
+                            </div>
+                        </div>
+                        <h6 class="section-subtitle mt-3">Post-processing</h6>
+                        <div class="parameter-group">
+                            <label class="parameter-label">keep_all_fragments:</label>
+                            <div class="parameter-control">
+                                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="keep-all-fragments" name="keep_all_fragments"></div>
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">sanitize:</label>
+                            <div class="parameter-control">
+                                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="sanitize" name="sanitize" checked></div>
+                            </div>
+                        </div>
+                        <div class="parameter-group">
+                            <label class="parameter-label">relax:</label>
+                            <div class="parameter-control">
+                                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="relax" name="relax" checked></div>
+                            </div>
+                        </div>
+                        <div class="settings-actions">
+                            <button type="button" class="btn btn-outline-secondary" id="reset-defaults">Reset to Defaults</button>
+                            <button type="submit" class="btn btn-primary" id="run-generation"><i data-feather="play" class="me-2"></i>Run Generation</button>
+                        </div>
+                        <div class="mt-3" id="progress-section" style="display:none;">
+                            <div class="progress mb-2"><div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar" role="progressbar" style="width:0%"></div></div>
+                            <div class="d-flex justify-content-between small text-muted"><span id="progress-label">Initializing...</span><span id="progress-percentage">0%</span></div>
+                            <div class="d-flex justify-content-between small mt-2"><span>Molecules:</span><span id="molecules-count">0</span></div>
+                            <div class="d-flex justify-content-between small"><span>Elapsed:</span><span id="time-elapsed">0s</span></div>
+                            <div class="d-flex justify-content-between small"><span>Remaining:</span><span id="time-remaining">--</span></div>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Step 4: Generation & Results (Sidebar) -->
+                <div id="sidebar-step-4">
+                    <h6 class="section-title">Generation & Results</h6>
+                    <div class="text-muted small mb-2">Select a generated molecule to overlay on the current protein.</div>
+                    <div id="results-list" class="mt-2"></div>
+                    <div class="mt-2">
+                        <a id="download-sdf-link" class="btn btn-sm btn-secondary d-none" target="_blank">
+                            <i data-feather="download" class="me-1"></i>Download SDF
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="col-md-9 col-lg-10 main-content">
+            <div class="row h-100">
+                <!-- 3D Viewer -->
+                <div class="col-lg-8 viewer-section">
+                    <div class="viewer-container">
+                        <div class="viewer-header">
+                            <h5 class="viewer-title">
+                                <i data-feather="box" class="me-2"></i>
+                                3D Protein Viewer
+                            </h5>
+                            <div class="viewer-controls">
+                                <button class="btn btn-outline-light btn-sm" title="Left Rotate">
+                                    <i data-feather="rotate-ccw"></i>
+                                </button>
+                                <button class="btn btn-outline-light btn-sm" title="Right Rotate">
+                                    <i data-feather="rotate-cw"></i>
+                                </button>
+                                <button class="btn btn-outline-light btn-sm" title="Zoom">
+                                    <i data-feather="zoom-in"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="viewer-content" id="protein-viewer">
+                            <div class="no-protein-selected">
+                                <div class="empty-state">
+                                    <i data-feather="zap" class="empty-icon"></i>
+                                    <h4>No Protein Selected</h4>
+                                    <p>Choose a target protein to view its 3D structure</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Panels: Step 1 & 3 Info -->
+                <div class="col-lg-4 info-panel" id="panel-info">
+                    <div class="info-container">
+                        <!-- Molecule Information -->
+                        <div class="info-card" style="padding: center">
+                            <div class="info-header">
+                                <h6><i data-feather="info" class="me-2"></i>Molecule Information</h6>
+                            </div>
+                            <div class="info-content" id="molecule-info">
+                                <p class="step-subtitle" style="font-size: 15px">Select a protein target to view molecular information</p>
+                            </div>
+                        </div>
+
+                        <!-- Visualization Controls -->
+                        <div class="info-card">
+                            <div class="info-header">
+                                <h6><i data-feather="eye" class="me-2"></i>Visualization</h6>
+                            </div>
+                            <div class="info-content">
+                                <div class="mb-3">
+                                    <label class="form-label">Representation</label>
+                                    <select id="representation-select" class="form-select form-select-sm">
+                                        <option value="cartoon" selected>Cartoon</option>
+                                        <option value="ball+stick">Stick & Ball</option>
+                                    </select>
+                                </div>
+                                
+                                
+                            </div>
+                        </div>
+
+                        <!-- Display Elements -->
+                        <div class="info-card">
+                            <div class="info-header">
+                                <h6><i data-feather="layers" class="me-2"></i>Display Elements</h6>
+                            </div>
+                            <div class="info-content">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="show-protein" checked>
+                                    <label class="form-check-label" for="show-protein">Show Protein</label>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="show-vertices">
+                                    <label class="form-check-label" for="show-vertices">Show Vertices</label>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="show-ligands" checked>
+                                    <label class="form-check-label" for="show-ligands">Show Ligands</label>
+                                </div>
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="show-surface">
+                                    <label class="form-check-label" for="show-surface">Show Surface</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Controls -->
+                        <div class="info-card">
+                            <div class="info-header">
+                                <h6><i data-feather="settings" class="me-2"></i>Advanced Controls</h6>
+                            </div>
+                            <div class="info-content">
+                                <div class="mb-3">
+                                    <label class="form-label d-flex justify-content-between">
+                                        <span>Rendering Quality</span>
+                                        <span class="text-muted" id="quality-value">High</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="quality-slider" min="0" max="2" value="2">
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label class="form-label d-flex justify-content-between">
+                                        <span>Surface Opacity</span>
+                                        <span class="text-muted" id="opacity-value">70%</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="opacity-slider" min="0" max="100" value="70">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Export & Share -->
+                        <div class="info-card">
+                            <div class="info-header">
+                                <h6><i data-feather="share-2" class="me-2"></i>Export & Share</h6>
+                            </div>
+                            <div class="info-content">
+                                <button class="btn btn-outline-primary btn-sm mb-2 w-100">
+                                    <i data-feather="image" class="me-2"></i>Export PNG
+                                </button>
+                                <button class="btn btn-outline-primary btn-sm mb-2 w-100">
+                                    <i data-feather="download" class="me-2"></i>Download PDB
+                                </button>
+                                <button class="btn btn-primary btn-sm w-100">
+                                    <i data-feather="share-2" class="me-2"></i>Share View
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Sidebar: mirrors the left-side step content -->
+                <div class="col-lg-4 right-sidebar" id="sidebar-right">
+                    <!-- Content will be cloned from the left side step panels by JavaScript -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
