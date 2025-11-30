@@ -8,14 +8,13 @@ class MoleculeAI {
     constructor() {
         this.selectedProtein = null;
         this.currentWorkflowStep = 1;
-    // NGL handles
-    this.nglComp = null;
-    this.currentLigandComp = null; // holds the currently displayed generated ligand component
-    this.reprs = { cartoon: null, ligand: null, surface: null, proteinBallStick: null, vertices: null };
-    // Pocket state
-    this.detectedPockets = [];
-    this.selectedPocket = null;
-    this.currentPocketMethod = 'auto';
+        // NGL handles
+        this.nglComp = null;
+        this.currentLigandComp = null;
+        this.reprs = { cartoon: null, ligand: null, surface: null, proteinBallStick: null, vertices: null };
+        // Pocket state
+        this.detectedPockets = [];
+        this.selectedPocket = null;
         this.init();
     }
 
@@ -23,8 +22,8 @@ class MoleculeAI {
         this.setupEventListeners();
         this.initializeSliders();
         this.setupProteinSearch();
+        this.setupLigandSearch();
         this.initNGLStage();
-    // Initialize step UI on load
         this.setWorkflowStep(1);
         try {
             const params = new URLSearchParams(window.location.search);
@@ -34,7 +33,11 @@ class MoleculeAI {
             const savedPdb = sessionStorage.getItem('selectedPdbId');
             const savedFile = sessionStorage.getItem('selectedFilename');
             if (savedPid && (savedPdb || savedFile)) {
-                this.loadProteinViewerNGL({ proteinId: savedPid, pdbId: savedPdb || '', filename: savedFile || '' });
+                this.loadProteinViewerNGL({ 
+                    proteinId: savedPid, 
+                    pdbId: savedPdb || '', 
+                    filename: savedFile || '' 
+                });
                 // Enable continue step1
                 const c1 = document.getElementById('continue-step1');
                 if (c1) c1.disabled = false;
@@ -146,6 +149,40 @@ class MoleculeAI {
             });
         }
 
+        // Add New ligand -> open file picker
+        const addLigandBtn = document.getElementById('add-new-ligand-btn');
+        const ligandInput = document.getElementById('ligand-file-input');
+        if (addLigandBtn && ligandInput) {
+            addLigandBtn.addEventListener('click', () => ligandInput.click());
+            ligandInput.addEventListener('change', async () => {
+                if (!ligandInput.files || !ligandInput.files[0]) return;
+                const file = ligandInput.files[0];
+                const name = file.name.toLowerCase();
+                if (!(name.endsWith('.pdb') || name.endsWith('.mol') || name.endsWith('.sdf'))) {
+                    this.showNotification('Please select a .pdb, .mol or .sdf file', 'info');
+                    return;
+                }
+                try {
+                    const fd = new FormData();
+                    fd.append('ligand_file', file);
+                    const res = await fetch('/upload_ligand', { method: 'POST', body: fd });
+                    const data = await res.json();
+                    if (data.success) {
+                        this.showNotification('Ligand uploaded successfully', 'success');
+                        // For now simply reload to refresh ligand list
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        this.showNotification(data.error || 'Ligand upload failed', 'info');
+                    }
+                } catch (err) {
+                    console.error(err);
+                    this.showNotification('Ligand upload error', 'info');
+                } finally {
+                    ligandInput.value = '';
+                }
+            });
+        }
+
         // Pocket method cards: only manual method remains
         document.querySelectorAll('.method-card').forEach(card => {
             card.addEventListener('click', (e) => {
@@ -193,7 +230,7 @@ class MoleculeAI {
         const continue2 = document.getElementById('continue-step2');
         if (continue2) {
             continue2.addEventListener('click', () => {
-                if (this.selectedPocket) this.setWorkflowStep(3);
+                if (this.selectedPocket || sessionStorage.getItem('selectedLigandFilename')) this.setWorkflowStep(3);
             });
         }
 
@@ -213,6 +250,24 @@ class MoleculeAI {
         }
     }
 
+    initializeSliders() {
+        const qualitySlider = document.getElementById('quality-slider');
+        const opacitySlider = document.getElementById('opacity-slider');
+
+        qualitySlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            const labels = ['Low', 'Medium', 'High'];
+            document.getElementById('quality-value').textContent = labels[value];
+            this.updateRenderingQuality(value);
+        });
+
+        opacitySlider.addEventListener('input', (e) => {
+            const value = e.target.value;
+            document.getElementById('opacity-value').textContent = `${value}%`;
+            this.updateSurfaceOpacity(value);
+        });
+    }
+
     setupProteinSearch() {
         const searchInput = document.getElementById('protein-search');
         if (searchInput) {
@@ -226,26 +281,75 @@ class MoleculeAI {
         }
     }
 
-    initializeSliders() {
-        const qualitySlider = document.getElementById('quality-slider');
-        const opacitySlider = document.getElementById('opacity-slider');
+    searchProteins(query) {
+        const proteinCards = document.querySelectorAll('.protein-card');
+        const searchQuery = query.toLowerCase().trim();
 
-        if (qualitySlider) {
-            qualitySlider.addEventListener('input', (e) => {
-                const value = parseInt(e.target.value);
-                const labels = ['Low', 'Medium', 'High'];
-                document.getElementById('quality-value').textContent = labels[value];
-                this.updateRenderingQuality(value);
+        proteinCards.forEach(card => {
+            const name = card.querySelector('.protein-name').textContent.toLowerCase();
+            const pdbId = card.querySelector('.pdb-id').textContent.toLowerCase();
+            const description = card.querySelector('.protein-description').textContent.toLowerCase();
+            
+            const matches = name.includes(searchQuery) || 
+                          pdbId.includes(searchQuery) || 
+                          description.includes(searchQuery);
+
+            card.style.display = matches || !searchQuery ? 'block' : 'none';
+        });
+    }
+
+    setupLigandSearch() {
+        const searchInput = document.getElementById('ligand-search');
+        if (searchInput) {
+            let searchTimeout;
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                const query = e.target.value.toLowerCase().trim();
+                searchTimeout = setTimeout(() => {
+                    const cards = document.querySelectorAll('.ligand-card');
+                    cards.forEach(card => {
+                        const name = (card.querySelector('.protein-name')?.textContent || '').toLowerCase();
+                        const fileSpan = card.querySelector('.pdb-id');
+                        const fileTxt = (fileSpan ? fileSpan.textContent : '').toLowerCase();
+                        const descEl = card.querySelector('.protein-description');
+                        const desc = (descEl ? descEl.textContent : '').toLowerCase();
+                        const matches = !query || name.includes(query) || fileTxt.includes(query) || desc.includes(query);
+                        card.style.display = matches ? 'block' : 'none';
+                    });
+                }, 200);
             });
         }
+    }
 
-        if (opacitySlider) {
-            opacitySlider.addEventListener('input', (e) => {
-                const value = e.target.value;
-                document.getElementById('opacity-value').textContent = `${value}%`;
-                this.updateSurfaceOpacity(value);
+    initNGLStage() {
+        const container = document.getElementById('protein-viewer');
+        if (!container || typeof NGL === 'undefined') return;
+        // Clear placeholder
+        container.innerHTML = '';
+        // Create NGL Stage
+        this.nglStage = new NGL.Stage('protein-viewer', { backgroundColor: "#000010" });
+        window.addEventListener('resize', () => {
+            this.nglStage.handleResize();
+        });
+    }
+
+    // --- Ligand selection helpers (Step 2) ---
+    setupLigandSelection() {
+        const cards = document.querySelectorAll('.ligand-card');
+        const contBtn = document.getElementById('continue-step2');
+        cards.forEach(card => {
+            card.addEventListener('click', () => {
+                // Clear previous selection
+                document.querySelectorAll('.ligand-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                // Store selected ligand filename for later (e.g., DiffSBDD ref ligand)
+                const filename = card.dataset.filename || '';
+                try {
+                    sessionStorage.setItem('selectedLigandFilename', filename);
+                } catch (_) {}
+                if (contBtn) contBtn.disabled = false;
             });
-        }
+        });
     }
 
     selectProtein(proteinCard) {
@@ -282,18 +386,6 @@ class MoleculeAI {
         this.updateMoleculeInfo(proteinCard);
 
         console.log(`Selected protein: ${proteinId}`);
-    }
-
-    initNGLStage() {
-        const container = document.getElementById('protein-viewer');
-        if (!container || typeof NGL === 'undefined') return;
-        // Clear placeholder
-        container.innerHTML = '';
-        // Create NGL Stage
-        this.nglStage = new NGL.Stage('protein-viewer', { backgroundColor: 'black' });
-        window.addEventListener('resize', () => {
-            this.nglStage.handleResize();
-        });
     }
 
     async loadProteinViewerNGL({ proteinId, pdbId, filename }) {
@@ -351,27 +443,14 @@ class MoleculeAI {
             }
         }
     }
-
     syncUIToReprs() {
-        // Map UI checkboxes to repr visibility
-        const showProtein = document.getElementById('show-protein');
-        const showLigands = document.getElementById('show-ligands');
-        const showSurface = document.getElementById('show-surface');
+        const reprMode = document.getElementById('representation-select')?.value;
+        const toggle = id => document.getElementById(id)?.checked;
 
-        if (showProtein && this.reprs.cartoon && this.reprs.proteinBallStick) {
-            const isCartoon = document.getElementById('representation-select')?.value === 'cartoon';
-            this.reprs.cartoon.setVisibility(isCartoon && showProtein.checked);
-            this.reprs.proteinBallStick.setVisibility(!isCartoon && showProtein.checked);
-        } else if (showProtein && this.reprs.cartoon) {
-            this.reprs.cartoon.setVisibility(showProtein.checked);
-        }
-
-        if (showLigands && this.reprs.ligand) {
-            this.reprs.ligand.setVisibility(showLigands.checked);
-        }
-        if (showSurface && this.reprs.surface) {
-            this.reprs.surface.setVisibility(showSurface.checked);
-        }
+        this.reprs.cartoon?.setVisibility(reprMode === 'cartoon' && toggle('show-protein'));
+        this.reprs.proteinBallStick?.setVisibility(reprMode === 'ball+stick' && toggle('show-protein'));
+        this.reprs.ligand?.setVisibility(toggle('show-ligands'));
+        this.reprs.surface?.setVisibility(toggle('show-surface'));
     }
 
     ensureVerticesRepresentation(show) {
@@ -570,7 +649,7 @@ class MoleculeAI {
 
         switch(action) {
             case 'rotate-ccw':
-                console.log('Rotating left');
+                console.log('Rotating left');ư
                 break;
             case 'rotate-cw':
                 console.log('Rotating right');
@@ -588,12 +667,16 @@ class MoleculeAI {
         try {
             // Update stage sampling (antialias/supersampling)
             if (this.nglStage && typeof this.nglStage.setParameters === 'function') {
-                this.nglStage.setParameters({ sampleLevel: Number(quality) });
+                this.nglStage.setParameters({
+                    sampleLevel: Number(quality) 
+                });
             }
             // Update all known representations
             Object.values(this.reprs).forEach(r => {
                 if (r && typeof r.setParameters === 'function') {
-                    r.setParameters({ quality: q });
+                    r.setParameters({
+                        quality: q 
+                    });
                 }
             });
         } catch (e) {
@@ -602,10 +685,12 @@ class MoleculeAI {
     }
 
     updateSurfaceOpacity(opacity) {
-        const alpha = Math.max(0, Math.min(100, Number(opacity))) / 100;
+        const alpha = Number(opacity) / 100;
         try {
             if (this.reprs.surface && typeof this.reprs.surface.setParameters === 'function') {
-                this.reprs.surface.setParameters({ opacity: alpha });
+                this.reprs.surface.setParameters({
+                    opacity: alpha 
+                });
             }
         } catch (e) {
             console.warn('Failed to set surface opacity:', e);
@@ -888,7 +973,11 @@ MoleculeAI.prototype.startProgressTracking = function() {
     let start = Date.now();
 
     // Kick off backend job using current selection
-    const ref = document.getElementById('manual-ref')?.value?.trim();
+    // Prefer explicit ligand selection if available, otherwise fall back to manual text
+    const selectedLigFile = sessionStorage.getItem('selectedLigandFilename') || '';
+    const manualRefInput = document.getElementById('manual-ref');
+    const manualRef = manualRefInput ? manualRefInput.value.trim() : '';
+    const ref = selectedLigFile || manualRef;
     const pdbId = sessionStorage.getItem('selectedPdbId') || '';
     const filename = sessionStorage.getItem('selectedFilename') || '';
     const form = document.getElementById('sampling-form');

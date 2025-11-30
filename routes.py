@@ -8,11 +8,36 @@ from flask import send_from_directory
 # fpocket integration removed — rely on built-in detector
 from utils.diffsbdd import get_runner
 
+def _get_ligands_from_uploads():
+    """Build a simple ligand list from files in the uploads folder.
+    Currently treats any .pdb/.mol/.sdf file in uploads/ as a ligand entry.
+    """
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads/ligands'))
+    os.makedirs(uploads_dir, exist_ok=True)
+    ligands = []
+    for fname in os.listdir(uploads_dir):
+        lower = fname.lower()
+        if not (lower.endswith('.pdb') or lower.endswith('.mol') or lower.endswith('.sdf')):
+            continue
+        base, ext = os.path.splitext(fname)
+        ligands.append({
+            'id': base.lower().replace(' ', '_').replace('-', '_'),
+            'name': base,
+            'filename': fname,
+            'description': f'Uploaded ligand file ({ext.lstrip(".").upper()})',
+            'tags': ['Ligand', 'Uploaded']
+        })
+    # Sort alphabetically by name for stable ordering
+    ligands.sort(key=lambda x: x['name'].lower())
+    return ligands
+
+
 @app.route('/')
 def index():
     """Main application page"""
     proteins = get_proteins()
-    return render_template('index.html', proteins=proteins)
+    ligands = _get_ligands_from_uploads()
+    return render_template('index.html', proteins=proteins, ligands=ligands)
 
 @app.route('/search_proteins')
 def search_proteins_route():
@@ -50,7 +75,7 @@ def upload_pdb():
         if not filename.lower().endswith('.pdb'):
             return jsonify({'success': False, 'error': 'Invalid file type'}), 400
 
-        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads/proteins'))
         os.makedirs(uploads_dir, exist_ok=True)
         save_path = os.path.join(uploads_dir, filename)
         file.save(save_path)
@@ -75,19 +100,44 @@ def upload_pdb():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.route('/upload_ligand', methods=['POST'])
+def upload_ligand():
+    """Upload a ligand file (PDB/MOL/SDF) into uploads and return a simple ligand entry."""
+    try:
+        if 'ligand_file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file part'}), 400
+        file = request.files['ligand_file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No selected file'}), 400
+
+        filename = file.filename
+        lower = filename.lower()
+        if not (lower.endswith('.pdb') or lower.endswith('.mol') or lower.endswith('.sdf')):
+            return jsonify({'success': False, 'error': 'Invalid file type'}), 400
+
+        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads/ligands'))
+        os.makedirs(uploads_dir, exist_ok=True)
+        save_path = os.path.join(uploads_dir, filename)
+        file.save(save_path)
+
+        base, ext = os.path.splitext(filename)
+        ligand = {
+            'id': base.lower().replace(' ', '_').replace('-', '_'),
+            'name': base,
+            'filename': filename,
+            'description': f'Uploaded ligand file ({ext.lstrip(".").upper()})',
+            'tags': ['Ligand', 'Uploaded']
+        }
+
+        return jsonify({'success': True, 'ligand': ligand})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
-    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads/proteins'))
     return send_from_directory(uploads_dir, filename)
-
-@app.route('/detect_pockets', methods=['POST'])
-def detect_pockets():
-    """Auto-detect binding pockets"""
-    pdb_id = request.form.get('pdb_id', '')
-    sequence = request.form.get('sequence')
-    # Use the built-in detector (mock or algorithm in data.proteins)
-    pockets = detect_binding_pockets(pdb_id, sequence)
-    return jsonify({'pockets': pockets})
 
 @app.route('/sampling_parameters')
 def sampling_parameters():
