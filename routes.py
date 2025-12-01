@@ -6,7 +6,7 @@ from app import app
 from data.proteins import get_proteins, get_protein_by_id, search_proteins, add_new_protein, detect_binding_pockets
 from flask import send_from_directory
 # fpocket integration removed — rely on built-in detector
-from utils.diffsbdd import get_runner
+from utils.flowr import get_runner
 
 def _get_ligands_from_uploads():
     """Build a simple ligand list from files in the uploads folder.
@@ -136,7 +136,7 @@ def upload_ligand():
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
-    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads/proteins'))
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
     return send_from_directory(uploads_dir, filename)
 
 @app.route('/sampling_parameters')
@@ -148,21 +148,37 @@ def sampling_parameters():
 @app.route('/save_sampling_config', methods=['POST'])
 def save_sampling_config():
     """Save sampling configuration"""
-    # Clamp n_samples to a maximum of 100 to match UI limits
-    n_samples = int(request.form.get('n_samples', 10))
-    if n_samples > 100:
-        n_samples = 100
+    def _int(field, default, max_value=None, min_value=0):
+        try:
+            value = int(request.form.get(field, default))
+        except (TypeError, ValueError):
+            value = default
+        if max_value is not None:
+            value = min(value, max_value)
+        if min_value is not None:
+            value = max(value, min_value)
+        return value
+
+    def _float(field, default, min_value=None):
+        try:
+            value = float(request.form.get(field, default))
+        except (TypeError, ValueError):
+            value = default
+        if min_value is not None:
+            value = max(value, min_value)
+        return value
 
     config = {
-        'n_samples': n_samples,
-        'legend_modes': int(request.form.get('legend_modes', 20)),
-        'model': request.form.get('model', 'Conditional model (Binding MOAD)'),
-        'timesteps': int(request.form.get('timesteps', 100)),
-        'resamplings': int(request.form.get('resamplings', 1)),
-        'jump_length': int(request.form.get('jump_length', 1)),
-        'keep_all_fragments': request.form.get('keep_all_fragments') == 'on',
-        'sanitize': request.form.get('sanitize') == 'on',
-        'relax': request.form.get('relax') == 'on'
+        'sample_n_molecules': _int('sample_n_molecules', 32, max_value=500, min_value=1),
+        'max_sample_iter': _int('max_sample_iter', 20, max_value=200, min_value=1),
+        'coord_noise_std': _float('coord_noise_std', 0.0, min_value=0.0),
+        'pocket_cutoff': _float('pocket_cutoff', 6.0, min_value=1.0),
+        'cut_pocket': request.form.get('cut_pocket') == 'on',
+        'sample_mol_sizes': request.form.get('sample_mol_sizes') == 'on',
+        'filter_valid_unique': request.form.get('filter_valid_unique') == 'on',
+        'compute_interactions': request.form.get('compute_interactions') == 'on',
+        'compute_interaction_recovery': request.form.get('compute_interaction_recovery') == 'on',
+        'protonate_generated_ligands': request.form.get('protonate_generated_ligands') == 'on'
     }
     
     # Store in session
@@ -176,58 +192,47 @@ def pocket_definition():
     return redirect(url_for('index', step=2))
 
 
-@app.route('/diffsbdd/start', methods=['POST'])
-def diffsbdd_start():
-    """Start a DiffSBDD generation job using the saved sampling config and current selection.
-    Expects form fields: ref_ligand (e.g., 'A:300'), pdb_id, filename (optional)
-    """
+@app.route('/flowr/start', methods=['POST'])
+def flowr_start():
+    """Kick off a FLOWR job using the saved sampling configuration."""
     try:
-        # Gather inputs
-        ref_ligand = request.form.get('ref_ligand', '').strip()
+        ligand_filename = request.form.get('ligand_filename', '').strip()
+        if not ligand_filename:
+            return jsonify({'success': False, 'error': 'Missing ligand file selection'}), 400
         pdb_id = request.form.get('pdb_id')
         filename = request.form.get('filename')
-        if not ref_ligand:
-            return jsonify({'success': False, 'error': 'Missing ref_ligand'}), 400
 
         cfg = session.get('sampling_config', {})
-        n_samples = int(cfg.get('n_samples', 10))
-        legend_modes = int(cfg.get('legend_modes', 20))
-        timesteps = int(cfg.get('timesteps', 100))
-        resamplings = int(cfg.get('resamplings', 1))
-        jump_length = int(cfg.get('jump_length', 1))
-        keep_all_fragments = bool(cfg.get('keep_all_fragments', False))
-        sanitize = bool(cfg.get('sanitize', True))
-        relax = bool(cfg.get('relax', True))
-
-        # Initialize runner
         uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
         runner = get_runner(uploads_dir)
         if not runner.is_configured():
             return jsonify({
                 'success': False,
-                'error': 'DiffSBDD not configured on server. Set DIFFSBDD_REPO, DIFFSBDD_PYTHON, DIFFSBDD_CHECKPOINT environment variables.'
+                'error': 'FLOWR not configured. Set FLOWR_REPO, FLOWR_PYTHON, FLOWR_CHECKPOINT (and optional FLOWR_* settings).'
             }), 500
 
         job = runner.start_job(
             pdb_id=pdb_id,
             filename=filename,
-            ref_ligand=ref_ligand,
-            n_samples=n_samples,
-            num_nodes_lig=legend_modes,
-            timesteps=timesteps,
-            resamplings=resamplings,
-            jump_length=jump_length,
-            keep_all_fragments=keep_all_fragments,
-            sanitize=sanitize,
-            relax=relax,
+            ligand_filename=ligand_filename,
+            sample_n_molecules=int(cfg.get('sample_n_molecules', 32)),
+            max_sample_iter=int(cfg.get('max_sample_iter', 20)),
+            coord_noise_std=float(cfg.get('coord_noise_std', 0.0)),
+            pocket_cutoff=float(cfg.get('pocket_cutoff', 6.0)),
+            cut_pocket=bool(cfg.get('cut_pocket', True)),
+            sample_mol_sizes=bool(cfg.get('sample_mol_sizes', True)),
+            filter_valid_unique=bool(cfg.get('filter_valid_unique', True)),
+            compute_interactions=bool(cfg.get('compute_interactions', False)),
+            compute_interaction_recovery=bool(cfg.get('compute_interaction_recovery', False)),
+            protonate_generated_ligands=bool(cfg.get('protonate_generated_ligands', False)),
         )
         return jsonify({'success': True, 'job_id': job.id})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
-@app.route('/diffsbdd/status/<job_id>')
-def diffsbdd_status(job_id):
+@app.route('/flowr/status/<job_id>')
+def flowr_status(job_id):
     uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
     runner = get_runner(uploads_dir)
     status = runner.get_status(job_id)
@@ -236,103 +241,61 @@ def diffsbdd_status(job_id):
     return jsonify({'success': True, 'status': status})
 
 
-@app.route('/diffsbdd/result/<job_id>/sdf')
-def diffsbdd_result_sdf(job_id):
-        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
-        runner = get_runner(uploads_dir)
-        job = runner.get_job(job_id)
-        if not job or not os.path.isfile(job.outfile):
-                return jsonify({'success': False, 'error': 'Result not found'}), 404
-        rel = os.path.relpath(job.outfile, uploads_dir)
-        d, f = os.path.split(rel)
-        return send_from_directory(os.path.join(uploads_dir, d), f, mimetype='chemical/x-mdl-sdfile')
+@app.route('/flowr/result/<job_id>/sdf')
+def flowr_result_sdf(job_id):
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+    runner = get_runner(uploads_dir)
+    job = runner.get_job(job_id)
+    if not job or not os.path.isfile(job.outfile):
+        return jsonify({'success': False, 'error': 'Result not found'}), 404
+    rel = os.path.relpath(job.outfile, uploads_dir)
+    directory, filename = os.path.split(rel)
+    return send_from_directory(os.path.join(uploads_dir, directory), filename, mimetype='chemical/x-mdl-sdfile')
 
 
-@app.route('/diffsbdd/result/<job_id>/pdb')
-def diffsbdd_result_pdb(job_id):
-        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
-        runner = get_runner(uploads_dir)
-        pdb_path = runner.convert_sdf_to_pdb(job_id)
-        if not pdb_path or not os.path.isfile(pdb_path):
-                return jsonify({'success': False, 'error': 'PDB not available'}), 404
-        rel = os.path.relpath(pdb_path, uploads_dir)
-        d, f = os.path.split(rel)
-        return send_from_directory(os.path.join(uploads_dir, d), f, mimetype='chemical/x-pdb')
+@app.route('/flowr/result/<job_id>/list')
+def flowr_result_list(job_id):
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+    runner = get_runner(uploads_dir)
+    molecules = runner.list_sdf_molecules(job_id)
+    return jsonify({'success': True, 'molecules': molecules})
 
 
-@app.route('/view_result/<job_id>')
-def view_result(job_id):
-        """Minimal viewer page that loads the converted PDB into NGL."""
-        # Inline simple HTML to avoid new template files
-        pdb_url = url_for('diffsbdd_result_pdb', job_id=job_id)
-        html = f"""
-        <!doctype html>
-        <html>
-        <head>
-            <meta charset='utf-8'>
-            <title>Result Viewer</title>
-            <script src='https://unpkg.com/ngl@latest/dist/ngl.js'></script>
-            <style>html,body,#stage{{width:100%;height:100%;margin:0;background:#000;}}</style>
-        </head>
-        <body>
-            <div id='stage'></div>
-            <script>
-                var stage = new NGL.Stage('stage', {{ backgroundColor: 'black' }});
-                stage.loadFile('{pdb_url}', {{ ext: 'pdb' }}).then(function(comp){{
-                    comp.addRepresentation('cartoon');
-                    comp.addRepresentation('ball+stick', {{ sele: 'ligand' }});
-                    comp.autoView();
-                }}).catch(function(e){{ console.error(e); alert('Failed to load result'); }});
-            </script>
-        </body>
-        </html>
-        """
-        return html
-
-
-@app.route('/diffsbdd/result/<job_id>/list')
-def diffsbdd_result_list(job_id):
-        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
-        runner = get_runner(uploads_dir)
-        lst = runner.list_sdf_molecules(job_id)
-        return jsonify({'success': True, 'molecules': lst})
-
-
-@app.route('/diffsbdd/result/<job_id>/pdb/<int:index>')
-def diffsbdd_result_pdb_index(job_id, index):
-        uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
-        runner = get_runner(uploads_dir)
-        pdb_path = runner.convert_sdf_to_pdb_index(job_id, index)
-        if not pdb_path or not os.path.isfile(pdb_path):
-                return jsonify({'success': False, 'error': 'PDB index not available'}), 404
-        rel = os.path.relpath(pdb_path, uploads_dir)
-        d, f = os.path.split(rel)
-        return send_from_directory(os.path.join(uploads_dir, d), f, mimetype='chemical/x-pdb')
+@app.route('/flowr/result/<job_id>/pdb/<int:index>')
+def flowr_result_pdb(job_id, index):
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+    runner = get_runner(uploads_dir)
+    pdb_path = runner.convert_sdf_to_pdb_index(job_id, index)
+    if not pdb_path or not os.path.isfile(pdb_path):
+        return jsonify({'success': False, 'error': 'PDB not available at that index'}), 404
+    rel = os.path.relpath(pdb_path, uploads_dir)
+    directory, filename = os.path.split(rel)
+    return send_from_directory(os.path.join(uploads_dir, directory), filename, mimetype='chemical/x-pdb')
 
 
 @app.route('/view_result/<job_id>/<int:index>')
-def view_result_index(job_id, index):
-        pdb_url = url_for('diffsbdd_result_pdb_index', job_id=job_id, index=index)
-        html = f"""
-        <!doctype html>
-        <html>
-        <head>
-            <meta charset='utf-8'>
-            <title>Result Viewer</title>
-            <script src='https://unpkg.com/ngl@latest/dist/ngl.js'></script>
-            <style>html,body,#stage{{width:100%;height:100%;margin:0;background:#000;}}</style>
-        </head>
-        <body>
-            <div id='stage'></div>
-            <script>
-                var stage = new NGL.Stage('stage', {{ backgroundColor: 'black' }});
-                stage.loadFile('{pdb_url}', {{ ext: 'pdb' }}).then(function(comp){{
-                    comp.addRepresentation('cartoon');
-                    comp.addRepresentation('ball+stick', {{ sele: 'ligand' }});
-                    comp.autoView();
-                }}).catch(function(e){{ console.error(e); alert('Failed to load result'); }});
-            </script>
-        </body>
-        </html>
-        """
-        return html
+def view_result(job_id, index):
+    pdb_url = url_for('flowr_result_pdb', job_id=job_id, index=index)
+    html = f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset='utf-8'>
+        <title>Result Viewer</title>
+        <script src='https://unpkg.com/ngl@latest/dist/ngl.js'></script>
+        <style>html,body,#stage{{width:100%;height:100%;margin:0;background:#000;}}</style>
+    </head>
+    <body>
+        <div id='stage'></div>
+        <script>
+            var stage = new NGL.Stage('stage', {{ backgroundColor: 'black' }});
+            stage.loadFile('{pdb_url}', {{ ext: 'pdb' }}).then(function(comp){{
+                comp.addRepresentation('cartoon');
+                comp.addRepresentation('ball+stick', {{ sele: 'ligand' }});
+                comp.autoView();
+            }}).catch(function(e){{ console.error(e); alert('Failed to load result'); }});
+        </script>
+    </body>
+    </html>
+    """
+    return html

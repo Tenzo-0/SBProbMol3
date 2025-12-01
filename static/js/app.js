@@ -23,11 +23,13 @@ class MoleculeAI {
         this.initializeSliders();
         this.setupProteinSearch();
         this.setupLigandSearch();
+        this.setupLigandSelection();
         this.initNGLStage();
         this.setWorkflowStep(1);
         try {
             const params = new URLSearchParams(window.location.search);
-            const stepParam = parseInt(params.get('step'));
+            const stepParam = parseInt(params.get('step'), 10);
+            const storedStep = parseInt(sessionStorage.getItem('currentWorkflowStep'), 10);
             // Load previous selection if present
             const savedPid = sessionStorage.getItem('selectedProteinId');
             const savedPdb = sessionStorage.getItem('selectedPdbId');
@@ -43,13 +45,14 @@ class MoleculeAI {
                 if (c1) c1.disabled = false;
                 this.selectedProtein = savedPid;
             }
-            if ([1,2,3,4].includes(stepParam)) {
-                if (stepParam > 1 && !this.selectedProtein) {
-                    this.setWorkflowStep(1);
-                } else {
-                    this.setWorkflowStep(stepParam);
-                }
+            let initialStep = 1;
+            if ([1, 2, 3, 4].includes(stepParam)) {
+                initialStep = stepParam;
+            } else if ([1, 2, 3, 4].includes(storedStep)) {
+                initialStep = storedStep;
             }
+            if (initialStep > 1 && !this.selectedProtein) initialStep = 1;
+            this.setWorkflowStep(initialStep);
         } catch (_) {}
     }
 
@@ -230,7 +233,12 @@ class MoleculeAI {
         const continue2 = document.getElementById('continue-step2');
         if (continue2) {
             continue2.addEventListener('click', () => {
-                if (this.selectedPocket || sessionStorage.getItem('selectedLigandFilename')) this.setWorkflowStep(3);
+                const ligandSelected = Boolean(sessionStorage.getItem('selectedLigandFilename'));
+                if (!ligandSelected) {
+                    this.showNotification('Select a reference ligand before continuing to sampling.', 'info');
+                    return;
+                }
+                this.setWorkflowStep(3);
             });
         }
 
@@ -241,12 +249,12 @@ class MoleculeAI {
             const resetBtn = document.getElementById('reset-defaults');
             if (resetBtn) resetBtn.addEventListener('click', () => this.resetSamplingDefaults());
             // Range display
-            const ns = document.getElementById('n-samples');
-            const nsv = document.getElementById('n-samples-value');
-            if (ns && nsv) ns.addEventListener('input', () => nsv.textContent = ns.value);
-            const ts = document.getElementById('timesteps');
-            const tsv = document.getElementById('timesteps-value');
-            if (ts && tsv) ts.addEventListener('input', () => tsv.textContent = ts.value);
+            const sampleSlider = document.getElementById('sample-n-molecules');
+            const sampleValue = document.getElementById('sample-n-molecules-value');
+            if (sampleSlider && sampleValue) sampleSlider.addEventListener('input', () => sampleValue.textContent = sampleSlider.value);
+            const iterSlider = document.getElementById('max-sample-iter');
+            const iterValue = document.getElementById('max-sample-iter-value');
+            if (iterSlider && iterValue) iterSlider.addEventListener('input', () => iterValue.textContent = iterSlider.value);
         }
     }
 
@@ -337,13 +345,19 @@ class MoleculeAI {
     setupLigandSelection() {
         const cards = document.querySelectorAll('.ligand-card');
         const contBtn = document.getElementById('continue-step2');
+        let stored = null;
+        try {
+            stored = sessionStorage.getItem('selectedLigandFilename');
+        } catch (_) {}
+        if (contBtn) contBtn.disabled = !stored;
         cards.forEach(card => {
+            const filename = card.dataset.filename || '';
+            if (stored && stored === filename) {
+                card.classList.add('selected');
+            }
             card.addEventListener('click', () => {
-                // Clear previous selection
                 document.querySelectorAll('.ligand-card').forEach(c => c.classList.remove('selected'));
                 card.classList.add('selected');
-                // Store selected ligand filename for later (e.g., DiffSBDD ref ligand)
-                const filename = card.dataset.filename || '';
                 try {
                     sessionStorage.setItem('selectedLigandFilename', filename);
                 } catch (_) {}
@@ -374,13 +388,13 @@ class MoleculeAI {
         } catch (_) {}
 
         // Enable continue button
-    const continue1 = document.getElementById('continue-step1');
-    if (continue1) continue1.disabled = false;
+        const continue1 = document.getElementById('continue-step1');
+        if (continue1) continue1.disabled = false;
 
-    // Update viewer (real 3D with NGL)
-    const pdbId = proteinCard.dataset.pdbId;
-    const filename = proteinCard.dataset.filename || '';
-    this.loadProteinViewerNGL({ proteinId, pdbId, filename });
+        // Update viewer (real 3D with NGL)
+        const pdbId = proteinCard.dataset.pdbId;
+        const filename = proteinCard.dataset.filename || '';
+        this.loadProteinViewerNGL({ proteinId, pdbId, filename });
         
         // Update molecule information
         this.updateMoleculeInfo(proteinCard);
@@ -396,8 +410,9 @@ class MoleculeAI {
         try {
             this.nglStage.removeAllComponents();
             this.currentLigandComp = null;
+            this.reprs = { cartoon: null, ligand: null, surface: null, proteinBallStick: null, vertices: null };
             // Try load from uploads using provided filename first, then PDBID.pdb
-            const localUrl = filename ? `/uploads/${filename}` : `/uploads/${pdbId}.pdb`;
+            const localUrl = filename ? `/uploads/proteins/${filename}` : `/uploads/proteins/${pdbId}.pdb`;
             let comp;
             try {
                 comp = await this.nglStage.loadFile(localUrl, { ext: 'pdb' });
@@ -413,6 +428,8 @@ class MoleculeAI {
             if (this.reprs.surface && typeof this.reprs.surface.setVisibility === 'function') {
                 this.reprs.surface.setVisibility(false);
             }
+            const currentMode = document.getElementById('representation-select')?.value || 'cartoon';
+            this.applyRepresentation(currentMode);
             this.syncUIToReprs();
             comp.autoView();
         } catch (e) {
@@ -556,6 +573,9 @@ class MoleculeAI {
         
         document.querySelector(`.workflow-step[data-step="${stepNumber}"]`).classList.add('active');
         this.currentWorkflowStep = stepNumber;
+        try {
+            sessionStorage.setItem('currentWorkflowStep', String(stepNumber));
+        } catch (_) {}
 
         // Update UI based on step
         this.updateWorkflowUI(stepNumber);
@@ -649,7 +669,7 @@ class MoleculeAI {
 
         switch(action) {
             case 'rotate-ccw':
-                console.log('Rotating left');ư
+                console.log('Rotating left');
                 break;
             case 'rotate-cw':
                 console.log('Rotating right');
@@ -926,16 +946,33 @@ MoleculeAI.prototype.renderPocketOverlay = function() {
 
 // --- Step 3: Sampling form helpers ---
 MoleculeAI.prototype.resetSamplingDefaults = function() {
-    const v = (id,val)=>{const el=document.getElementById(id); if(el){ if(el.type==='checkbox'){el.checked=!!val;} else {el.value=val;}}};
-    v('n-samples',10); const nsv=document.getElementById('n-samples-value'); if(nsv) nsv.textContent='10';
-    // Ensure slider max reflects new UI limit (100)
-    const nsEl = document.getElementById('n-samples'); if (nsEl) nsEl.max = '100';
-    v('legend-modes',20); v('model','Conditional model (Binding MOAD)');
-    v('timesteps',100); const tsv=document.getElementById('timesteps-value'); if(tsv) tsv.textContent='100';
-    v('resamplings',1); v('jump-length',1);
-    const k=document.getElementById('keep-all-fragments'); if(k) k.checked=false;
-    const s=document.getElementById('sanitize'); if(s) s.checked=true;
-    const r=document.getElementById('relax'); if(r) r.checked=true;
+    const setValue = (id, val) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (el.type === 'checkbox') {
+            el.checked = Boolean(val);
+        } else {
+            el.value = val;
+        }
+    };
+
+    setValue('sample-n-molecules', 32);
+    const sampleLabel = document.getElementById('sample-n-molecules-value');
+    if (sampleLabel) sampleLabel.textContent = '32';
+
+    setValue('max-sample-iter', 20);
+    const iterLabel = document.getElementById('max-sample-iter-value');
+    if (iterLabel) iterLabel.textContent = '20';
+
+    setValue('coord-noise-std', 0);
+    setValue('pocket-cutoff', 6);
+
+    setValue('cut-pocket', true);
+    setValue('sample-mol-sizes', true);
+    setValue('filter-valid-unique', true);
+    setValue('compute-interactions', false);
+    setValue('compute-interaction-recovery', false);
+    setValue('protonate-generated-ligands', false);
 };
 
 MoleculeAI.prototype.submitSamplingForm = async function(e) {
@@ -945,17 +982,24 @@ MoleculeAI.prototype.submitSamplingForm = async function(e) {
     const original = submitBtn ? submitBtn.innerHTML : '';
     if (submitBtn) { submitBtn.innerHTML = '<i data-feather="loader" class="me-2"></i>Running...'; submitBtn.disabled = true; feather.replace(); }
     try {
+        let ligandSelected = null;
+        try {
+            ligandSelected = sessionStorage.getItem('selectedLigandFilename');
+        } catch (_) {}
+        if (!ligandSelected) {
+            throw new Error('Select a reference ligand before running FLOWR');
+        }
         const fd = new FormData(form);
         const res = await fetch('/save_sampling_config', { method: 'POST', body: fd });
         const data = await res.json();
         if (data.success) {
-            this.showNotification('Generation started successfully!', 'success');
+            this.showNotification('Sampling configuration saved. Starting FLOWR...', 'success');
             this.startProgressTracking();
         } else {
             throw new Error('Failed to start generation');
         }
     } catch (err) {
-        this.showNotification('Error starting generation. Please try again.', 'info');
+        this.showNotification(err.message || 'Error starting generation. Please try again.', 'info');
         if (submitBtn) { submitBtn.innerHTML = original; submitBtn.disabled = false; feather.replace(); }
     }
 };
@@ -972,72 +1016,94 @@ MoleculeAI.prototype.startProgressTracking = function() {
     section.style.display = 'block';
     let start = Date.now();
 
-    // Kick off backend job using current selection
-    // Prefer explicit ligand selection if available, otherwise fall back to manual text
-    const selectedLigFile = sessionStorage.getItem('selectedLigandFilename') || '';
-    const manualRefInput = document.getElementById('manual-ref');
-    const manualRef = manualRefInput ? manualRefInput.value.trim() : '';
-    const ref = selectedLigFile || manualRef;
-    const pdbId = sessionStorage.getItem('selectedPdbId') || '';
-    const filename = sessionStorage.getItem('selectedFilename') || '';
-    const form = document.getElementById('sampling-form');
-    const fd = new FormData(form);
-    fd.append('ref_ligand', ref || '');
+    let ligandFilename = null;
+    try {
+        ligandFilename = sessionStorage.getItem('selectedLigandFilename');
+    } catch (_) {}
+    if (!ligandFilename) {
+        this.showNotification('Select a reference ligand before running FLOWR.', 'info');
+        return;
+    }
+    let pdbId = '';
+    let filename = '';
+    try {
+        pdbId = sessionStorage.getItem('selectedPdbId') || '';
+        filename = sessionStorage.getItem('selectedFilename') || '';
+    } catch (_) {}
+
+    const fd = new FormData();
+    fd.append('ligand_filename', ligandFilename);
     fd.append('pdb_id', pdbId);
     fd.append('filename', filename);
 
     const submitBtn = document.getElementById('run-generation');
     const original = submitBtn ? submitBtn.innerHTML : '';
 
-    fetch('/diffsbdd/start', { method: 'POST', body: fd }).then(r=>r.json()).then(data=>{
-        if (!data.success) throw new Error(data.error || 'Failed to start DiffSBDD');
-        const jobId = data.job_id;
-        if (label) label.textContent = 'Initializing...';
-        const poll = setInterval(async () => {
-            try {
-                const res = await fetch(`/diffsbdd/status/${jobId}`);
-                const js = await res.json();
-                if (!js.success) throw new Error('Status error');
-                const st = js.status;
-                const progress = st.progress ?? 0;
-                bar.style.width = `${progress}%`;
-                if (pct) pct.textContent = `${progress}%`;
-                if (mol) mol.textContent = st.molecules ?? 0;
-                const elapsed = Math.floor((Date.now()-start)/1000);
-                if (tEl) tEl.textContent = `${elapsed}s`;
-                if (label) label.textContent = st.message || st.state;
-                if (progress >= 100 || st.state === 'success') {
-                    clearInterval(poll);
-                    bar.classList.remove('progress-bar-animated');
-                    bar.classList.add('bg-success');
-                    if (submitBtn) { submitBtn.innerHTML = original; submitBtn.disabled = false; feather.replace(); }
-                    this.showNotification('Molecule generation completed!', 'success');
-                    if (st.outfile_url) {
-                        this.showNotification('Download: ' + st.outfile_url, 'success');
+    fetch('/flowr/start', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.error || 'Failed to start FLOWR');
+            const jobId = data.job_id;
+            if (label) label.textContent = 'Initializing FLOWR...';
+            const poll = setInterval(async () => {
+                try {
+                    const res = await fetch(`/flowr/status/${jobId}`);
+                    const js = await res.json();
+                    if (!js.success) throw new Error('Status error');
+                    const st = js.status;
+                    const progress = st.progress ?? 0;
+                    bar.style.width = `${progress}%`;
+                    if (pct) pct.textContent = `${progress}%`;
+                    if (mol) mol.textContent = st.molecules ?? 0;
+                    const elapsed = Math.floor((Date.now() - start) / 1000);
+                    if (tEl) tEl.textContent = `${elapsed}s`;
+                    if (tRem && st.eta_seconds) tRem.textContent = `${Math.max(0, Math.round(st.eta_seconds))}s`;
+                    if (label) label.textContent = st.message || st.state;
+                    if (progress >= 100 || st.state === 'success') {
+                        clearInterval(poll);
+                        bar.classList.remove('progress-bar-animated');
+                        bar.classList.add('bg-success');
+                        if (submitBtn) {
+                            submitBtn.innerHTML = original;
+                            submitBtn.disabled = false;
+                            feather.replace();
+                        }
+                        this.showNotification('FLOWR generation completed!', 'success');
+                        this.showResultsPicker(jobId);
                     }
-                    // Let user pick which molecule to view
-                    this.showResultsPicker(jobId);
-                }
-                if (st.state === 'failed') {
+                    if (st.state === 'failed') {
+                        clearInterval(poll);
+                        if (submitBtn) {
+                            submitBtn.innerHTML = original;
+                            submitBtn.disabled = false;
+                            feather.replace();
+                        }
+                        this.showNotification('FLOWR generation failed. Check logs.', 'info');
+                    }
+                } catch (e) {
                     clearInterval(poll);
-                    if (submitBtn) { submitBtn.innerHTML = original; submitBtn.disabled = false; feather.replace(); }
-                    this.showNotification('Generation failed. Check logs.', 'info');
+                    if (submitBtn) {
+                        submitBtn.innerHTML = original;
+                        submitBtn.disabled = false;
+                        feather.replace();
+                    }
+                    this.showNotification('Error polling FLOWR status', 'info');
                 }
-            } catch (e) {
-                clearInterval(poll);
-                if (submitBtn) { submitBtn.innerHTML = original; submitBtn.disabled = false; feather.replace(); }
-                this.showNotification('Error polling status', 'info');
+            }, 2000);
+        })
+        .catch(err => {
+            if (submitBtn) {
+                submitBtn.innerHTML = original;
+                submitBtn.disabled = false;
+                feather.replace();
             }
-        }, 2000);
-    }).catch(err => {
-        if (submitBtn) { submitBtn.innerHTML = original; submitBtn.disabled = false; feather.replace(); }
-        this.showNotification(err.message || 'Error starting DiffSBDD', 'info');
-    });
+            this.showNotification(err.message || 'Error starting FLOWR', 'info');
+        });
 };
 
 MoleculeAI.prototype.showResultsPicker = async function(jobId){
     try {
-        const res = await fetch(`/diffsbdd/result/${jobId}/list`);
+        const res = await fetch(`/flowr/result/${jobId}/list`);
         const data = await res.json();
         if (!data.success) throw new Error('Failed to list results');
         const mols = data.molecules || [];
@@ -1060,7 +1126,7 @@ MoleculeAI.prototype.showResultsPicker = async function(jobId){
         }
         const dl = document.getElementById('download-sdf-link');
         if (dl) {
-            dl.href = `/diffsbdd/result/${jobId}/sdf`;
+            dl.href = `/flowr/result/${jobId}/sdf`;
             dl.classList.remove('d-none');
         }
         // Navigate to results panel
@@ -1074,7 +1140,7 @@ MoleculeAI.prototype.loadGeneratedPdbIntoViewer = async function(jobId, index){
     try {
         if (!this.nglStage) this.initNGLStage();
         if (!this.nglStage) return;
-        const url = `/diffsbdd/result/${jobId}/pdb/${index}`;
+        const url = `/flowr/result/${jobId}/pdb/${index}`;
         this.nglStage.removeAllComponents();
         const comp = await this.nglStage.loadFile(url, { ext: 'pdb' });
         this.nglComp = comp;
@@ -1108,7 +1174,7 @@ MoleculeAI.prototype.overlayGeneratedLigand = async function(jobId, index){
     try { if (this.currentLigandComp) { this.nglStage.removeComponent(this.currentLigandComp); } } catch(_) {}
     this.currentLigandComp = null;
     // Load ligand as a separate component and add representation
-        const ligUrl = `/diffsbdd/result/${jobId}/pdb/${index}`;
+        const ligUrl = `/flowr/result/${jobId}/pdb/${index}`;
     const ligComp = await this.nglStage.loadFile(ligUrl, { ext: 'pdb' });
     this.currentLigandComp = ligComp;
     ligComp.addRepresentation('ball+stick', { sele: 'ligand', colorScheme: 'element' });

@@ -11,7 +11,7 @@ import os
 def _uploads_dir():
     # data/proteins.py -> project_root/uploads
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    return os.path.normpath(os.path.join(root, 'uploads'))
+    return os.path.normpath(os.path.join(root, 'uploads/proteins'))
 
 
 def _protein_from_filename(filename: str):
