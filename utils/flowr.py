@@ -10,6 +10,11 @@ from typing import Dict, Optional
 
 from urllib.request import urlretrieve
 
+try:
+    from flowr_config import FLOWR_SETTINGS  # type: ignore
+except Exception:
+    FLOWR_SETTINGS = {}
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +42,17 @@ class FlowrRunner:
                  python_path: Optional[str] = None,
                  checkpoint_path: Optional[str] = None):
         self.uploads_dir = os.path.abspath(uploads_dir)
-        self.repo_path = repo_path or os.environ.get('FLOWR_REPO', '')
-        self.python_path = python_path or os.environ.get('FLOWR_PYTHON', '')
-        self.checkpoint_path = checkpoint_path or os.environ.get('FLOWR_CHECKPOINT', '')
-        self.data_path = os.environ.get('FLOWR_DATA_PATH', '')
-        self.dataset = os.environ.get('FLOWR_DATASET', '')
-        self.arch = os.environ.get('FLOWR_ARCH', 'pocket')
-        self.pocket_type = os.environ.get('FLOWR_POCKET_TYPE', 'holo')
-        self.batch_cost = int(os.environ.get('FLOWR_BATCH_COST', '100') or 100)
-        self.num_workers = int(os.environ.get('FLOWR_NUM_WORKERS', '8') or 8)
-        self.gpus = int(os.environ.get('FLOWR_GPUS', '1') or 1)
+        cfg = FLOWR_SETTINGS or {}
+        self.repo_path = repo_path or cfg.get('repo_path') or os.environ.get('FLOWR_REPO', '')
+        self.python_path = python_path or cfg.get('python_path') or os.environ.get('FLOWR_PYTHON', '')
+        self.checkpoint_path = checkpoint_path or cfg.get('checkpoint_path') or os.environ.get('FLOWR_CHECKPOINT', '')
+        self.data_path = cfg.get('data_path') or os.environ.get('FLOWR_DATA_PATH', '')
+        self.dataset = cfg.get('dataset') or os.environ.get('FLOWR_DATASET', '')
+        self.arch = cfg.get('arch') or os.environ.get('FLOWR_ARCH', 'pocket')
+        self.pocket_type = cfg.get('pocket_type') or os.environ.get('FLOWR_POCKET_TYPE', 'holo')
+        self.batch_cost = int(cfg.get('batch_cost') or os.environ.get('FLOWR_BATCH_COST', '100') or 100)
+        self.num_workers = int(cfg.get('num_workers') or os.environ.get('FLOWR_NUM_WORKERS', '8') or 8)
+        self.gpus = int(cfg.get('gpus') or os.environ.get('FLOWR_GPUS', '1') or 1)
         self.jobs: Dict[str, FlowrJob] = {}
 
     @property
