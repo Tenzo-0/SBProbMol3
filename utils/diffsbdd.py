@@ -281,15 +281,33 @@ class DiffSBDDRunner:
             return None
 
     def list_sdf_molecules(self, job_id: str):
-        """Return a list of dicts {index, title} for molecules in the job's SDF using RDKit."""
+        """Return list of dicts {index, title, vina, sa, qed} for molecules.
+
+        SA and QED come from SDF properties SA_SCORE and QED if present.
+        Vina score (if available) is read from VINA_SCORE or Vina_score property.
+        """
         job = self.get_job(job_id)
         if not job or not os.path.isfile(job.outfile):
             return []
         script = (
-            "import sys,json; from rdkit import Chem; "
-            "mols=[m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]; "
-            "out=[{'index':i,'title':(m.GetProp('_Name') if m.HasProp('_Name') else f'mol_{i+1}')} for i,m in enumerate(mols)]; "
-            "print(json.dumps(out))"
+            "import sys, json\n"
+            "from rdkit import Chem\n"
+            "mols = [m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]\n"
+            "out = []\n"
+            "for i, m in enumerate(mols):\n"
+            "    title = m.GetProp('_Name') if m.HasProp('_Name') else f'mol_{i+1}'\n"
+            "    sa = m.GetProp('SA_SCORE') if m.HasProp('SA_SCORE') else None\n"
+            "    qed = m.GetProp('QED') if m.HasProp('QED') else None\n"
+            "    vina = None\n"
+            "    pname = None\n"
+            "    for key in m.GetPropNames():\n"
+            "        if key.upper() in ['VINA_SCORE', 'VINA', 'VINA_SCORE_KCAL_MOL']:\n"
+            "            pname = key\n"
+            "            break\n"
+            "    if pname is not None:\n"
+            "        vina = m.GetProp(pname)\n"
+            "    out.append({'index': i, 'title': title, 'sa': sa, 'qed': qed, 'vina': vina})\n"
+            "print(json.dumps(out))\n"
         )
         try:
             ret = subprocess.run([self.python_path, '-c', script, job.outfile], cwd=self.repo_path,
