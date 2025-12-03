@@ -5,7 +5,7 @@ import threading
 import subprocess
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from urllib.request import urlretrieve
 
@@ -24,6 +24,16 @@ class DiffSBDDJob:
     outfile: str = ""
     log_file: str = ""
     proc: Optional[subprocess.Popen] = None
+    receptor_pdb: Optional[str] = None
+
+
+@dataclass
+class MoleculeScore:
+    index: int
+    title: str
+    vina_score: Optional[float] = None
+    qed: Optional[float] = None
+    sa: Optional[float] = None
 
 
 class DiffSBDDRunner:
@@ -127,7 +137,7 @@ class DiffSBDDRunner:
             cmd += ['--relax']
 
         job = DiffSBDDJob(id=job_id, state='running', message='Starting DiffSBDD...', n_samples=n_samples,
-                           outfile=outfile, log_file=log_file)
+                   outfile=outfile, log_file=log_file, receptor_pdb=pdb_path)
         self.jobs[job_id] = job
 
         def _run():
@@ -208,6 +218,129 @@ class DiffSBDDRunner:
     def get_job_dir(self, job_id: str) -> str:
         return os.path.join(self.uploads_dir, 'diffsbdd', job_id)
 
+    # --- AutoDock / PDBQT helpers -------------------------------------------------
+
+    @staticmethod
+    def _is_float(val: str) -> bool:
+        try:
+            float(val)
+            return True
+        except Exception:
+            return False
+
+    def _prepare_receptor_pdbqt(self, job: DiffSBDDJob) -> Optional[str]:
+        """Convert receptor PDB to PDBQT using OpenBabel if needed.
+
+        Requires the `obabel` executable in PATH. This function is best-effort:
+        if anything fails it returns None and VINAScore will be skipped.
+        """
+        if not job.receptor_pdb or not os.path.isfile(job.receptor_pdb):
+            return None
+        workdir = self.get_job_dir(job.id)
+        os.makedirs(workdir, exist_ok=True)
+        receptor_pdbqt = os.path.join(workdir, 'receptor.pdbqt')
+        if os.path.isfile(receptor_pdbqt):
+            return receptor_pdbqt
+        cmd = ['obabel', '-ipdb', job.receptor_pdb, '-xp', '-opdbqt', '-O', receptor_pdbqt]
+        try:
+            ret = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, check=False)
+            if ret.returncode == 0 and os.path.isfile(receptor_pdbqt):
+                return receptor_pdbqt
+            logger.error('Failed to prepare receptor PDBQT (rc=%s): %s', ret.returncode, ret.stderr)
+        except Exception as e:
+            logger.exception('Error preparing receptor PDBQT: %s', e)
+        return None
+
+    def _prepare_ligand_pdbqt(self, mol, index: int, job: DiffSBDDJob) -> Optional[str]:
+        """Write RDKit mol to PDB and convert to PDBQT using OpenBabel.
+
+        Returns absolute path to ligand PDBQT or None on failure.
+        """
+        try:
+            from rdkit import Chem
+        except ImportError:
+            logger.error('RDKit not available; cannot export ligand PDB for docking.')
+            return None
+
+        workdir = self.get_job_dir(job.id)
+        os.makedirs(workdir, exist_ok=True)
+        pdb_path = os.path.join(workdir, f'lig_{index+1}.pdb')
+        lig_pdbqt = os.path.join(workdir, f'lig_{index+1}.pdbqt')
+        if os.path.isfile(lig_pdbqt):
+            return lig_pdbqt
+        try:
+            Chem.MolToPDBFile(mol, pdb_path)
+        except Exception as e:
+            logger.exception('Failed to write ligand PDB: %s', e)
+            return None
+
+        cmd = ['obabel', '-ipdb', pdb_path, '-xp', '-opdbqt', '-O', lig_pdbqt]
+        try:
+            ret = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, check=False)
+            if ret.returncode == 0 and os.path.isfile(lig_pdbqt):
+                return lig_pdbqt
+            logger.error('Failed to prepare ligand PDBQT (rc=%s): %s', ret.returncode, ret.stderr)
+        except Exception as e:
+            logger.exception('Error preparing ligand PDBQT: %s', e)
+        return None
+
+    def _run_autodock_gpu(self, receptor_pdbqt: str, ligand_pdbqt: str, job: DiffSBDDJob, index: int) -> Optional[float]:
+        """Run AutoDock-GPU for a single ligand and parse the best affinity.
+
+        Requires AUTODOCK_GPU_BIN env var pointing to the executable. This
+        uses a generic invocation and attempts to parse a Vina-like RESULT
+        line from the log file. If anything fails, returns None.
+        """
+        autodock_bin = os.environ.get('AUTODOCK_GPU_BIN')
+        if not autodock_bin or not os.path.isfile(autodock_bin):
+            logger.error('AUTODOCK_GPU_BIN is not configured or not found; skipping VINAScore.')
+            return None
+
+        workdir = self.get_job_dir(job.id)
+        os.makedirs(workdir, exist_ok=True)
+        out_pdbqt = os.path.join(workdir, f'out_{index+1}.pdbqt')
+        log_path = os.path.join(workdir, f'log_{index+1}.txt')
+
+        # NOTE: Adjust arguments according to your AutoDock-GPU build/CLI.
+        cmd = [
+            autodock_bin,
+            '--receptor', receptor_pdbqt,
+            '--ligand', ligand_pdbqt,
+            '--out', out_pdbqt,
+            '--log', log_path,
+        ]
+
+        try:
+            ret = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, check=False)
+            if ret.returncode != 0:
+                logger.error('AutoDock-GPU failed (rc=%s): %s', ret.returncode, ret.stderr)
+                return None
+        except Exception as e:
+            logger.exception('AutoDock-GPU execution error: %s', e)
+            return None
+
+        if not os.path.isfile(log_path):
+            return None
+
+        best_affinity: Optional[float] = None
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    # Try to parse Vina-style result lines
+                    if 'VINA RESULT' in line or 'Affinity' in line:
+                        parts = line.replace(',', ' ').split()
+                        vals = [p for p in parts if self._is_float(p)]
+                        if vals:
+                            best_affinity = float(vals[0])
+                            break
+        except Exception as e:
+            logger.exception('Failed to parse AutoDock-GPU log: %s', e)
+            return None
+        return best_affinity
+
     def convert_sdf_to_pdb(self, job_id: str, select: str = 'first') -> Optional[str]:
         """Convert a job's SDF to PDB using RDKit in the DiffSBDD env. Returns output path or None."""
         job = self.get_job(job_id)
@@ -236,6 +369,58 @@ class DiffSBDDRunner:
         except Exception as e:
             logger.exception('List SDF error: %s', e)
             return []
+
+    def score_sdf_molecules(self, job_id: str) -> List[MoleculeScore]:
+        """Return per-molecule VINAScore (placeholder), QED and SA scores using RDKit.
+
+        VINAScore here is a simple placeholder based on heavy atom count so that
+        the UI always has a numeric column even if an external docking engine is
+        not configured. Replace with a proper docking call if available.
+        """
+        job = self.get_job(job_id)
+        if not job or not os.path.isfile(job.outfile):
+            return []
+
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import QED
+            try:
+                # SA score is in rdkit Contrib (sascorer)
+                from rdkit.Chem import rdMolDescriptors
+                have_sa = hasattr(rdMolDescriptors, 'CalcSyntheticAccessibilityScore')
+            except Exception:  # pragma: no cover - contrib may be missing
+                rdMolDescriptors = None
+                have_sa = False
+        except ImportError:
+            logger.error('RDKit is not available in this environment; cannot compute scores.')
+            return []
+
+        scores: List[MoleculeScore] = []
+        suppl = Chem.SDMolSupplier(job.outfile, removeHs=False)
+
+        # Prepare receptor PDBQT once per job
+        receptor_pdbqt = self._prepare_receptor_pdbqt(job)
+
+        for idx, mol in enumerate(m for m in suppl if m):
+            title = mol.GetProp('_Name') if mol.HasProp('_Name') else f'mol_{idx+1}'
+            # Compute VINAScore via AutoDock-GPU if possible
+            vina = None
+            if receptor_pdbqt:
+                lig_pdbqt = self._prepare_ligand_pdbqt(mol, idx, job)
+                if lig_pdbqt:
+                    vina = self._run_autodock_gpu(receptor_pdbqt, lig_pdbqt, job, idx)
+            try:
+                qed_val = float(QED.qed(mol))
+            except Exception:
+                qed_val = None
+            sa_val = None
+            if have_sa:
+                try:
+                    sa_val = float(rdMolDescriptors.CalcSyntheticAccessibilityScore(mol))
+                except Exception:
+                    sa_val = None
+            scores.append(MoleculeScore(index=idx, title=title, vina_score=vina, qed=qed_val, sa=sa_val))
+        return scores
 
     def convert_sdf_to_pdb_index(self, job_id: str, index: int) -> Optional[str]:
         """Convert one specific molecule (0-based index) from SDF to a PDB file and return its path."""

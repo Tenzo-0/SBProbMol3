@@ -298,6 +298,34 @@ def diffsbdd_result_list(job_id):
         return jsonify({'success': True, 'molecules': lst})
 
 
+@app.route('/diffsbdd/result/<job_id>/scores')
+def diffsbdd_result_scores(job_id):
+    """Return VINAScore, QED and SA for each generated ligand.
+
+    The VINAScore field is currently a heuristic placeholder based on heavy
+    atom count unless a proper docking workflow is wired in on the
+    DiffSBDD side. This endpoint is meant purely for ranking and display
+    in the web UI.
+    """
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
+    runner = get_runner(uploads_dir)
+    try:
+        scores = runner.score_sdf_molecules(job_id)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    out = []
+    for s in scores:
+        out.append({
+            'index': s.index,
+            'title': s.title,
+            'vina_score': s.vina_score,
+            'qed': s.qed,
+            'sa': s.sa,
+        })
+    return jsonify({'success': True, 'scores': out})
+
+
 @app.route('/diffsbdd/result/<job_id>/pdb/<int:index>')
 def diffsbdd_result_pdb_index(job_id, index):
         uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
