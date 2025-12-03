@@ -505,31 +505,8 @@ class MoleculeAI {
     }
 
     updateMoleculeInfo(proteinCard) {
-        const infoContainer = document.getElementById('molecule-info');
-        const proteinName = proteinCard.querySelector('.protein-name').textContent;
-        const pdbId = proteinCard.querySelector('.pdb-id').textContent;
-        const description = proteinCard.querySelector('.protein-description').textContent;
-        
-        infoContainer.innerHTML = `
-            <div class="molecule-details">
-                <div class="detail-row mb-2">
-                    <span class="detail-label">PDB ID:</span>
-                    <span class="detail-value">${pdbId}</span>
-                </div>
-                <div class="detail-row mb-2">
-                    <span class="detail-label">Description:</span>
-                    <span class="detail-value">${description}</span>
-                </div>
-                <div class="detail-row mb-2">
-                    <span class="detail-label">Resolution:</span>
-                    <span class="detail-value">1.8 Å</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Chain Count:</span>
-                    <span class="detail-value">2</span>
-                </div>
-            </div>
-        `;
+        // Molecule information panel is now dedicated to generated ligands scores,
+        // so this function no longer needs to render static protein details.
     }
 
     searchProteins(query) {
@@ -1058,6 +1035,28 @@ MoleculeAI.prototype.showResultsPicker = async function(jobId){
                     this.setWorkflowStep(4);
                 });
             });
+        }
+        // Fill molecule scores table (Vina, QED, SA)
+        const scoresWrap = document.getElementById('molecule-scores');
+        const tbody = document.getElementById('molecule-scores-body');
+        if (scoresWrap && tbody) {
+            if (mols.length > 0) {
+                scoresWrap.style.display = '';
+                tbody.innerHTML = mols.map(m => {
+                    const vina = m.vina != null ? m.vina : '';
+                    const qed = m.qed != null ? m.qed : '';
+                    const sa = m.sa != null ? m.sa : '';
+                    return `<tr>
+                        <td>${m.index + 1}</td>
+                        <td>${vina}</td>
+                        <td>${qed}</td>
+                        <td>${sa}</td>
+                    </tr>`;
+                }).join('');
+            } else {
+                scoresWrap.style.display = 'none';
+                tbody.innerHTML = '';
+            }
         }
         const dl = document.getElementById('download-sdf-link');
         if (dl) {
