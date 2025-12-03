@@ -1,0 +1,59 @@
+name: SB
+channels:
+  - pytorch
+  - pyg
+  - conda-forge
+channel_priority: strict
+
+dependencies:
+  # Core
+  - python=3.10
+  - pip
+
+  # ML Stack
+  - pytorch=2.4.1
+  - pytorch-cuda=12.4
+  - torch-scatter=2.4.1
+  - numpy=1.26
+  - scipy=1.13
+  - pandas=2.2
+  - networkx
+  - pytorch-lightning=2.5.5
+  - torchmetrics
+
+  # Chemistry & Biology
+  - rdkit=2023.09.2
+  - openbabel=3.1.1
+  - biopython=1.79
+  - prody
+  - imageio
+  - yaml
+
+  # Utilities
+  - tqdm
+  - matplotlib-base
+  - requests
+  - pillow
+  - flask
+  - flask-sqlalchemy
+  - sqlalchemy
+
+  # Optional visualization
+  - cairo
+  - pycairo
+
+  # CUDA (from pytorch-cuda)
+  # DO NOT install cuda-* manually → handled by pytorch-cuda
+
+  # Pip-only packages
+  - pip:
+      - vina
+      - meeko
+      - molscrub
+      - gemmi
+      - rdkit-pypi   # ignored since conda rdkit takes priority
+      - gunicorn
+      - wandb
+      - pydantic
+      - email-validator
+      - psycopg2-binary
