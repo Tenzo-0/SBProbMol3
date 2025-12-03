@@ -9,8 +9,21 @@ from typing import Dict, Optional
 
 from urllib.request import urlretrieve
 
-
 logger = logging.getLogger(__name__)
+
+try:
+    from rdkit import Chem  # type: ignore
+    from rdkit.Chem import SDMolSupplier, SDWriter  # type: ignore
+    from rdkit.Chem import QED  # type: ignore
+    from rdkit.Contrib.SA_Score import sascorer  # type: ignore
+    _HAVE_SASCORE = True
+except Exception:  # pragma: no cover
+    Chem = None
+    SDMolSupplier = None
+    SDWriter = None
+    QED = None
+    sascorer = None
+    _HAVE_SASCORE = False
 
 
 @dataclass
@@ -32,6 +45,7 @@ class DiffSBDDRunner:
     Requires environment variables:
       - DIFFSBDD_PYTHON: path to Python interpreter in the DiffSBDD conda env (python.exe)
       - DIFFSBDD_REPO: local path to the DiffSBDD repo root
+
       - DIFFSBDD_CHECKPOINT: path to a .ckpt model file
     """
 
@@ -90,6 +104,37 @@ class DiffSBDDRunner:
                 logger.error("Failed to download PDB %s: %s", pdb_id, e)
                 raise
         raise FileNotFoundError("No local PDB file found and download failed. Please upload a PDB file.")
+
+    # --- SA score helpers -------------------------------------------------
+
+    def _annotate_sascore(self, job: DiffSBDDJob) -> None:
+        """Annotate each SDF molecule with SA_SCORE and QED in-place.
+
+        Uses RDKit's official SA_Score and QED implementations if available.
+        No-op if RDKit/SA_Score is unavailable or outfile is missing.
+        """
+        if not _HAVE_SASCORE or not os.path.isfile(job.outfile):
+            return
+        try:
+            suppl = SDMolSupplier(job.outfile, removeHs=False)
+            mols = [m for m in suppl if m]
+            if not mols:
+                return
+            for m in mols:
+                try:
+                    sa = sascorer.calculateScore(m)
+                    m.SetProp('SA_SCORE', f"{sa:.3f}")
+                    if QED is not None:
+                        qed = QED.qed(m)
+                        m.SetProp('QED', f"{qed:.3f}")
+                except Exception:
+                    continue
+            writer = SDWriter(job.outfile)
+            for m in mols:
+                writer.write(m)
+            writer.close()
+        except Exception:
+            logger.exception("Failed to annotate SA scores for job %s", job.id)
 
     def start_job(self,
                   pdb_id: Optional[str],
@@ -159,6 +204,8 @@ class DiffSBDDRunner:
                     ret = proc.wait()
                 job.finished_at = time.time()
                 if ret == 0 and os.path.isfile(outfile):
+                    # Post-process: add SA_SCORE to each generated ligand if possible
+                    self._annotate_sascore(job)
                     job.state = 'success'
                     job.message = 'Completed'
                 else:
