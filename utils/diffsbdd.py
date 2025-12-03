@@ -41,9 +41,13 @@ class DiffSBDDRunner:
                  python_path: Optional[str] = None,
                  checkpoint_path: Optional[str] = None):
         self.uploads_dir = os.path.abspath(uploads_dir)
-        self.repo_path = repo_path or os.environ.get('DIFFSBDD_REPO', '')
-        self.python_path = python_path or os.environ.get('DIFFSBDD_PYTHON', '')
-        self.checkpoint_path = checkpoint_path or os.environ.get('DIFFSBDD_CHECKPOINT', '')
+        DEFAULT_REPO_PATH = "/home/user/DiffSBDD"
+        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/ds1/bin/python"
+        DEFAULT_CHECKPOINT_PATH = "/home/user/DiffSBDD/checkpoints/crossdocked_fullatom_cond.ckpt"
+
+        self.repo_path = repo_path or DEFAULT_REPO_PATH
+        self.python_path = python_path or DEFAULT_PYTHON_PATH
+        self.checkpoint_path = checkpoint_path or DEFAULT_CHECKPOINT_PATH
         self.jobs: Dict[str, DiffSBDDJob] = {}
 
     def is_configured(self) -> bool:
@@ -54,23 +58,30 @@ class DiffSBDDRunner:
         ])
 
     def ensure_pdb_local(self, pdb_id: Optional[str], filename: Optional[str]) -> str:
-        """Return absolute path to a local PDB file. If not present, try to download by pdb_id."""
-        # 1) If an uploaded filename is provided and exists, use it
+        """Return absolute path to a local PDB file.
+
+        Proteins are stored under uploads/proteins. If not present, try to download
+        by pdb_id into that folder.
+        """
+        proteins_dir = os.path.join(self.uploads_dir, 'proteins')
+        os.makedirs(proteins_dir, exist_ok=True)
+
+        # 1) If an uploaded filename is provided and exists under uploads/proteins, use it
         if filename:
-            local = os.path.join(self.uploads_dir, filename)
+            local = os.path.join(proteins_dir, filename)
             if os.path.isfile(local):
                 return local
-        # 2) If a file with the PDB ID exists in uploads, use it
+        # 2) If a file with the PDB ID exists in uploads/proteins, use it
         if pdb_id:
-            candidate = os.path.join(self.uploads_dir, f"{pdb_id}.pdb")
+            candidate = os.path.join(proteins_dir, f"{pdb_id}.pdb")
             if os.path.isfile(candidate):
                 return candidate
-        # 3) Try to download from RCSB using pdb_id
+        # 3) Try to download from RCSB using pdb_id into uploads/proteins
         if pdb_id:
             url = f"https://files.rcsb.org/download/{pdb_id.upper()}.pdb"
-            dest = os.path.join(self.uploads_dir, f"{pdb_id}.pdb")
+            dest = os.path.join(proteins_dir, f"{pdb_id}.pdb")
             try:
-                os.makedirs(self.uploads_dir, exist_ok=True)
+                os.makedirs(proteins_dir, exist_ok=True)
                 logger.info("Downloading PDB %s -> %s", url, dest)
                 urlretrieve(url, dest)
                 if os.path.isfile(dest):
@@ -102,13 +113,21 @@ class DiffSBDDRunner:
         outfile = os.path.join(outdir, 'output.sdf')
         log_file = os.path.join(outdir, 'run.log')
 
+        # Resolve reference ligand path: if it's just a filename, assume uploads/ligands
+        lig_path = ref_ligand
+        if lig_path and not os.path.isabs(lig_path) and not os.path.dirname(lig_path):
+            lig_dir = os.path.join(self.uploads_dir, 'ligands')
+            cand = os.path.join(lig_dir, lig_path)
+            if os.path.isfile(cand):
+                lig_path = cand
+
         cmd = [
             self.python_path,
             os.path.join(self.repo_path, 'generate_ligands.py'),
             self.checkpoint_path,
             '--pdbfile', pdb_path,
             '--outfile', outfile,
-            '--ref_ligand', ref_ligand,
+            '--ref_ligand', lig_path,
             '--n_samples', str(int(n_samples)),
         ]
         if num_nodes_lig is not None:
