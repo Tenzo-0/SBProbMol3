@@ -22,6 +22,7 @@ class MoleculeAI {
         this.setupEventListeners();
         this.initializeSliders();
         this.setupProteinSearch();
+        this.setupLigandSelection();
         this.setupLigandSearch();
         this.initNGLStage();
         this.setWorkflowStep(1);
