@@ -39,6 +39,29 @@
     .parameter-control { display:flex; flex-direction:column; gap:.5rem; }
     .range-labels { display:flex; justify-content:space-between; font-size:.75rem; color: var(--text-muted); }
     .settings-actions { margin-top: 1rem; display:flex; gap:.75rem; }
+    /* Scores table styling */
+    .scores-table-wrapper {
+        max-height: 13rem; /* ~7 rows at 0.35rem padding + line height */
+        overflow-y: auto;
+        border-radius: 6px;
+        background: var(--secondary-bg);
+        border: 1px solid var(--border-color);
+    }
+    .scores-table { font-size: 0.8rem; color: var(--text-primary); background: transparent; }
+    .scores-table thead { background: rgba(74,144,226,0.08); border-bottom: 1px solid var(--border-color); }
+    .scores-table thead th { border: none; color: var(--text-muted); font-weight:600; text-transform: uppercase; letter-spacing: .03em; }
+    .scores-table tbody tr { transition: background-color .15s ease, transform .05s ease; }
+    .scores-table tbody tr:nth-child(even) { background-color: rgba(0,0,0,0.15); }
+    .scores-table tbody tr:hover { background-color: rgba(74,144,226,0.12); transform: translateY(-1px); }
+    .scores-table td, .scores-table th { padding: .35rem .5rem; vertical-align: middle; border-color: var(--border-color); }
+    .scores-table th:nth-child(1) { width: 12%; }
+    .scores-table th:nth-child(2),
+    .scores-table th:nth-child(3),
+    .scores-table th:nth-child(4) { width: 29%; text-align: center; }
+    .scores-table td:nth-child(1) { color: var(--text-muted); font-weight:500; }
+    .scores-table td:nth-child(2) { color: var(--accent-teal); font-weight:600; text-align:center; }
+    .scores-table td:nth-child(3) { color: #f4b41a; font-weight:600; text-align:center; }
+    .scores-table td:nth-child(4) { color: #e67e22; font-weight:600; text-align:center; }
 </style>
 {% endblock %}
 
@@ -264,7 +287,7 @@
                 <!-- Step 4: Generation & Results (Sidebar) -->
                 <div id="sidebar-step-4">
                     <h6 class="section-title">Generation & Results</h6>
-                    <div class="text-muted small mb-2">Select a generated molecule to overlay on the current protein.</div>
+                    <div class="step-subtitle small mb-2">Select a generated molecule to overlay on the current protein.</div>
                     <div id="results-list" class="mt-2"></div>
                     <div class="mt-2">
                         <a id="download-sdf-link" class="btn btn-sm btn-secondary d-none" target="_blank">
@@ -314,13 +337,27 @@
                 <!-- Right Panels: Step 1 & 3 Info -->
                 <div class="col-lg-4 info-panel" id="panel-info">
                     <div class="info-container">
-                        <!-- Molecule Information -->
+                        <!-- Generated Ligands Scores -->
                         <div class="info-card" style="padding: center">
                             <div class="info-header">
-                                <h6><i data-feather="info" class="me-2"></i>Molecule Information</h6>
+                                <h6><i data-feather="info" class="me-2"></i>Generated Ligands Scores</h6>
                             </div>
-                            <div class="info-content" id="molecule-info">
-                                <p class="step-subtitle" style="font-size: 15px">Select a protein target to view molecular information</p>
+                            <div class="info-content" id="molecule-scores" style="display:none;">
+                                <div class="table-responsive scores-table-wrapper">
+                                    <table class="table table-sm mb-0 scores-table">
+                                        <thead>
+                                            <tr>
+                                                <th>#</th>
+                                                <th>Vina (kcal/mol)</th>
+                                                <th>QED</th>
+                                                <th>SA</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="molecule-scores-body">
+                                            <!-- Filled dynamically -->
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
 
