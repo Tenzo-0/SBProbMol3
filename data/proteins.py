@@ -9,9 +9,14 @@ import os
 
 
 def _uploads_dir():
-    # data/proteins.py -> project_root/uploads
+    # Base uploads directory: data/proteins.py -> project_root/uploads
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     return os.path.normpath(os.path.join(root, 'uploads'))
+
+
+def _proteins_dir():
+    # Proteins are stored under uploads/proteins
+    return os.path.join(_uploads_dir(), 'proteins')
 
 
 def _protein_from_filename(filename: str):
@@ -33,7 +38,7 @@ def _protein_from_filename(filename: str):
 
 def get_proteins():
     """Return all available protein structures (derived from uploads/*.pdb)."""
-    uploads = _uploads_dir()
+    uploads = _proteins_dir()
     try:
         files = [f for f in os.listdir(uploads) if f.lower().endswith('.pdb')]
     except FileNotFoundError:
