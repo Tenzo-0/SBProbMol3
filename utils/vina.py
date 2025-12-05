@@ -1,6 +1,5 @@
 import subprocess
 import shlex
-from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 import xml.etree.ElementTree as ET
@@ -8,15 +7,6 @@ import xml.etree.ElementTree as ET
 
 class AutoDockGPUPipelineError(RuntimeError):
     pass
-
-
-@dataclass
-class PreparedReceptor:
-    protein_pdb: Path
-    out_prefix: str
-    receptor_pdbqt: Path
-    receptor_gpf: Path
-    maps_fld: Path
 
 
 def run_command(cmd: List[str], cwd: Optional[Path] = None) -> str:
@@ -55,6 +45,10 @@ def prepare_receptor(
     workdir = workdir or protein_pdb.parent
     receptor_pdbqt = workdir / f"{out_prefix}.pdbqt"
     receptor_gpf = workdir / f"{out_prefix}.gpf"
+
+    # Fast path: if outputs already exist, skip recomputation
+    if receptor_pdbqt.exists() and receptor_gpf.exists():
+        return receptor_pdbqt, receptor_gpf
 
     cmd = [
         "mk_prepare_receptor.py",
@@ -217,52 +211,6 @@ def parse_autodock_xml(xml_file: Path) -> Dict[str, Any]:
     }
 
 
-def prepare_receptor_maps(
-    protein_pdb: str,
-    ligand_sdf: str,
-    out_prefix: Optional[str] = None,
-    padding: float = 6.0,
-) -> PreparedReceptor:
-    """Prepare receptor once (PDBQT + GPF + maps) using the provided ligand box."""
-    protein_pdb_path = Path(protein_pdb).resolve()
-    ligand_sdf_path = Path(ligand_sdf).resolve()
-    prefix = out_prefix or protein_pdb_path.stem
-    receptor_pdbqt, receptor_gpf = prepare_receptor(
-        protein_pdb=protein_pdb_path,
-        ligand_sdf=ligand_sdf_path,
-        out_prefix=prefix,
-        padding=padding,
-    )
-    maps_fld = run_autogrid(receptor_gpf)
-    return PreparedReceptor(
-        protein_pdb=protein_pdb_path,
-        out_prefix=prefix,
-        receptor_pdbqt=receptor_pdbqt,
-        receptor_gpf=receptor_gpf,
-        maps_fld=maps_fld,
-    )
-
-
-def score_ligand_with_prepared(
-    prepared: PreparedReceptor,
-    ligand_sdf: str,
-    nrun: int = 50,
-) -> Tuple[Optional[float], Path, Path]:
-    """Score a ligand using a precomputed receptor/mapping."""
-    ligand_sdf_path = Path(ligand_sdf).resolve()
-    ligand_pdbqt = prepare_ligand_with_obabel(ligand_sdf_path)
-    xml_file = run_autodock_gpu(
-        maps_fld=prepared.maps_fld,
-        ligand_pdbqt=ligand_pdbqt,
-        nrun=nrun,
-    )
-    parsed = parse_autodock_xml(xml_file)
-    best_score = parsed["best_cluster_lowest"]
-    if best_score is None and parsed["run_energies"]:
-        best_score = min(parsed["run_energies"])
-    return best_score, xml_file, ligand_pdbqt
-
-
 def run_full_pipeline(
     protein_pdb: str,
     ligand_sdf: str,
@@ -289,17 +237,39 @@ def run_full_pipeline(
     Returns:
         (best_score, xml_file)
     """
-    prepared = prepare_receptor_maps(
-        protein_pdb=protein_pdb,
-        ligand_sdf=ligand_sdf,
+    protein_pdb_path = Path(protein_pdb).resolve()
+    ligand_sdf_path = Path(ligand_sdf).resolve()
+
+    if out_prefix is None:
+        out_prefix = protein_pdb_path.stem
+
+    # 1) receptor prep
+    _, receptor_gpf = prepare_receptor(
+        protein_pdb=protein_pdb_path,
+        ligand_sdf=ligand_sdf_path,
         out_prefix=out_prefix,
         padding=padding,
     )
-    best_score, xml_file, _ = score_ligand_with_prepared(
-        prepared=prepared,
-        ligand_sdf=ligand_sdf,
+
+    # 2) ligand prep
+    ligand_pdbqt = prepare_ligand_with_obabel(ligand_sdf_path)
+
+    # 3) autogrid
+    maps_fld = run_autogrid(receptor_gpf)
+
+    # 4) autodock-gpu (XML out)
+    xml_file = run_autodock_gpu(
+        maps_fld=maps_fld,
+        ligand_pdbqt=ligand_pdbqt,
         nrun=nrun,
     )
+
+    # 5) parse XML
+    parsed = parse_autodock_xml(xml_file)
+    best_score = parsed["best_cluster_lowest"]
+    if best_score is None and parsed["run_energies"]:
+        best_score = min(parsed["run_energies"])
+
     return best_score, xml_file
 
 
