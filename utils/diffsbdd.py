@@ -1,334 +1,461 @@
+import os
+import uuid
+import time
+import threading
 import subprocess
-import shlex
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
-import xml.etree.ElementTree as ET
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List
 
+from urllib.request import urlretrieve
 
-class AutoDockGPUPipelineError(RuntimeError):
-    pass
+logger = logging.getLogger(__name__)
+
+try:
+    from rdkit import Chem  # type: ignore
+    from rdkit.Chem import SDMolSupplier, SDWriter  # type: ignore
+    from rdkit.Chem import QED  # type: ignore
+    from rdkit.Contrib.SA_Score import sascorer  # type: ignore
+    _HAVE_SASCORE = True
+except Exception:  # pragma: no cover
+    Chem = None
+    SDMolSupplier = None
+    SDWriter = None
+    QED = None
+    sascorer = None
+    _HAVE_SASCORE = False
+
+try:
+    # Local AutoDock-GPU pipeline helper
+    from . import vina  # type: ignore
+    _HAVE_VINA = True
+except Exception:  # pragma: no cover
+    vina = None
+    _HAVE_VINA = False
 
 
 @dataclass
-class PreparedReceptor:
-    protein_pdb: Path
-    out_prefix: str
-    receptor_pdbqt: Path
-    receptor_gpf: Path
-    maps_fld: Path
+class DiffSBDDJob:
+    id: str
+    state: str = "queued"  # queued | running | success | failed
+    message: str = ""
+    started_at: float = field(default_factory=time.time)
+    finished_at: Optional[float] = None
+    n_samples: int = 0
+    outfile: str = ""
+    log_file: str = ""
+    proc: Optional[subprocess.Popen] = None
 
 
-def run_command(cmd: List[str], cwd: Optional[Path] = None) -> str:
-    """Run a shell command and return stdout, raise if non-zero exit."""
-    print(f"[CMD] {' '.join(shlex.quote(c) for c in cmd)}")
-    result = subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        raise AutoDockGPUPipelineError(
-            f"Command failed with exit code {result.returncode}: {' '.join(cmd)}\n"
-            f"Output:\n{result.stdout}"
-        )
-    return result.stdout
-
-
-def prepare_receptor(
-    protein_pdb: Path,
-    ligand_sdf: Path,
-    out_prefix: str,
-    padding: float = 6.0,
-    workdir: Optional[Path] = None,
-) -> Tuple[Path, Path]:
+class DiffSBDDRunner:
     """
-    Run mk_prepare_receptor.py to produce receptor PDBQT and GPF.
+    Thin wrapper to run DiffSBDD's generate_ligands.py as a subprocess.
+    Requires environment variables:
+      - DIFFSBDD_PYTHON: path to Python interpreter in the DiffSBDD conda env (python.exe)
+      - DIFFSBDD_REPO: local path to the DiffSBDD repo root
 
-    mk_prepare_receptor.py -i <protein>.pdb -o <name> -p -v -g \
-        --box_enveloping <ligand>.sdf --padding 6
+      - DIFFSBDD_CHECKPOINT: path to a .ckpt model file
     """
-    workdir = workdir or protein_pdb.parent
-    receptor_pdbqt = workdir / f"{out_prefix}.pdbqt"
-    receptor_gpf = workdir / f"{out_prefix}.gpf"
 
-    cmd = [
-        "mk_prepare_receptor.py",
-        "-i", str(protein_pdb),
-        "-o", out_prefix,
-        "-p",
-        "-v",
-        "-g",
-        "--box_enveloping", str(ligand_sdf),
-        "--padding", str(padding),
-    ]
-    run_command(cmd, cwd=workdir)
+    def __init__(self,
+                 uploads_dir: str,
+                 repo_path: Optional[str] = None,
+                 python_path: Optional[str] = None,
+                 checkpoint_path: Optional[str] = None):
+        self.uploads_dir = os.path.abspath(uploads_dir)
+        DEFAULT_REPO_PATH = "/home/user/DiffSBDD"
+        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/ds/bin/python"
+        DEFAULT_CHECKPOINT_PATH = "/home/user/DiffSBDD/checkpoints/crossdocked_fullatom_cond.ckpt"
 
-    if not receptor_pdbqt.exists():
-        raise AutoDockGPUPipelineError(f"Expected receptor PDBQT not found: {receptor_pdbqt}")
-    if not receptor_gpf.exists():
-        raise AutoDockGPUPipelineError(f"Expected receptor GPF not found: {receptor_gpf}")
-    return receptor_pdbqt, receptor_gpf
+        self.repo_path = repo_path or DEFAULT_REPO_PATH
+        self.python_path = python_path or DEFAULT_PYTHON_PATH
+        self.checkpoint_path = checkpoint_path or DEFAULT_CHECKPOINT_PATH
+        self.jobs: Dict[str, DiffSBDDJob] = {}
 
+    def is_configured(self) -> bool:
+        return all([
+            self.repo_path and os.path.isdir(self.repo_path),
+            self.python_path and os.path.isfile(self.python_path),
+            self.checkpoint_path and os.path.isfile(self.checkpoint_path),
+        ])
 
-def prepare_ligand_with_obabel(
-    ligand_sdf: Path,
-    ligand_pdbqt: Optional[Path] = None,
-) -> Path:
-    """
-    Convert SDF -> PDBQT using Open Babel:
+    def ensure_pdb_local(self, pdb_id: Optional[str], filename: Optional[str]) -> str:
+        """Return absolute path to a local PDB file.
 
-        obabel <ligand>.sdf -O <ligand>.pdbqt
-    """
-    if ligand_pdbqt is None:
-        ligand_pdbqt = ligand_sdf.with_suffix(".pdbqt")
-    cmd = [
-        "obabel",
-        str(ligand_sdf),
-        "-O", str(ligand_pdbqt),
-    ]
-    run_command(cmd, cwd=ligand_sdf.parent)
+        Proteins are stored under uploads/proteins. If not present, try to download
+        by pdb_id into that folder.
+        """
+        proteins_dir = os.path.join(self.uploads_dir, 'proteins')
+        os.makedirs(proteins_dir, exist_ok=True)
 
-    if not ligand_pdbqt.exists():
-        raise AutoDockGPUPipelineError(f"Expected ligand PDBQT not found: {ligand_pdbqt}")
-    return ligand_pdbqt
+        # 1) If an uploaded filename is provided and exists under uploads/proteins, use it
+        if filename:
+            local = os.path.join(proteins_dir, filename)
+            if os.path.isfile(local):
+                return local
+        # 2) If a file with the PDB ID exists in uploads/proteins, use it
+        if pdb_id:
+            candidate = os.path.join(proteins_dir, f"{pdb_id}.pdb")
+            if os.path.isfile(candidate):
+                return candidate
+        # 3) Try to download from RCSB using pdb_id into uploads/proteins
+        if pdb_id:
+            url = f"https://files.rcsb.org/download/{pdb_id.upper()}.pdb"
+            dest = os.path.join(proteins_dir, f"{pdb_id}.pdb")
+            try:
+                os.makedirs(proteins_dir, exist_ok=True)
+                logger.info("Downloading PDB %s -> %s", url, dest)
+                urlretrieve(url, dest)
+                if os.path.isfile(dest):
+                    return dest
+            except Exception as e:
+                logger.error("Failed to download PDB %s: %s", pdb_id, e)
+                raise
+        raise FileNotFoundError("No local PDB file found and download failed. Please upload a PDB file.")
 
+    # --- SA score helpers -------------------------------------------------
 
-def run_autogrid(
-    receptor_gpf: Path,
-    workdir: Optional[Path] = None,
-) -> Path:
-    """
-    Run AutoGrid:
+    def _annotate_sascore(self, job: DiffSBDDJob) -> None:
+        """Annotate each SDF molecule with SA_SCORE and QED in-place.
 
-        autogrid4 -p <protein>.gpf -l <protein>.glg
-
-    Returns path to <protein>.maps.fld
-    """
-    workdir = workdir or receptor_gpf.parent
-    prefix = receptor_gpf.with_suffix("")  # remove .gpf
-    fld = Path(str(prefix) + ".maps.fld")
-
-    cmd = [
-        "autogrid4",
-        "-p", str(receptor_gpf),
-        "-l", str(prefix) + ".glg",
-    ]
-    run_command(cmd, cwd=workdir)
-
-    if not fld.exists():
-        raise AutoDockGPUPipelineError(f"Expected maps.fld not found: {fld}")
-    return fld
-
-
-def run_autodock_gpu(
-    maps_fld: Path,
-    ligand_pdbqt: Path,
-    nrun: int = 50,
-) -> Path:
-    """
-    Run docking with AutoDock-GPU (NO -O; expect XML):
-
-        autodock_gpu_128wi --ffile <protein>.maps.fld \
-                           --lfile <ligand>.pdbqt \
-                           --nrun 50
-
-    AutoDock-GPU will create an XML file, typically <ligand_stem>.xml
-    """
-    workdir = maps_fld.parent
-    cmd = [
-        "autodock_gpu_128wi",
-        "--ffile", str(maps_fld),
-        "--lfile", str(ligand_pdbqt),
-        "--nrun", str(nrun),
-    ]
-    run_command(cmd, cwd=workdir)
-
-    # Assume XML has same stem as ligand PDBQT: e.g. 3rfm_B_CFF.pdbqt -> 3rfm_B_CFF.xml
-    xml_file = ligand_pdbqt.with_suffix(".xml")
-    if not xml_file.exists():
-        raise AutoDockGPUPipelineError(f"Expected XML output not found: {xml_file}")
-    return xml_file
-
-
-def parse_autodock_xml(xml_file: Path) -> Dict[str, Any]:
-    """
-    Parse AutoDock-GPU XML to extract energies.
-
-    - Reads all <free_NRG_binding> under <runs><run>...</run>
-    - Reads best cluster (cluster_rank="1") from <clustering_histogram>
-      to get:
-        lowest_binding_energy (our 'vina-like' score)
-        mean_binding_energy
-
-    Returns:
-        {
-          "run_energies": [float, ...],
-          "best_cluster_lowest": float or None,
-          "best_cluster_mean": float or None,
-        }
-    """
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-
-    # 1) Energies for each run
-    run_energies: List[float] = []
-    runs_elem = root.find("runs")
-    if runs_elem is not None:
-        for run in runs_elem.findall("run"):
-            e_elem = run.find("free_NRG_binding")
-            if e_elem is not None and e_elem.text is not None:
+        Uses RDKit's official SA_Score and QED implementations if available.
+        No-op if RDKit/SA_Score is unavailable or outfile is missing.
+        """
+        if not _HAVE_SASCORE or not os.path.isfile(job.outfile):
+            return
+        try:
+            suppl = SDMolSupplier(job.outfile, removeHs=False)
+            mols = [m for m in suppl if m]
+            if not mols:
+                return
+            for m in mols:
                 try:
-                    run_energies.append(float(e_elem.text))
-                except ValueError:
-                    pass
+                    sa = sascorer.calculateScore(m)
+                    m.SetProp('SA_SCORE', f"{sa:.3f}")
+                    if QED is not None:
+                        qed = QED.qed(m)
+                        m.SetProp('QED', f"{qed:.3f}")
+                except Exception:
+                    continue
+            writer = SDWriter(job.outfile)
+            for m in mols:
+                writer.write(m)
+            writer.close()
+        except Exception:
+            logger.exception("Failed to annotate SA scores for job %s", job.id)
 
-    # 2) Best cluster (cluster_rank="1") from clustering_histogram
-    best_lowest = None
-    best_mean = None
-    result_elem = root.find("result")
-    if result_elem is not None:
-        hist_elem = result_elem.find("clustering_histogram")
-        if hist_elem is not None:
-            for clus in hist_elem.findall("cluster"):
-                if clus.attrib.get("cluster_rank") == "1":
-                    lb = clus.attrib.get("lowest_binding_energy")
-                    mb = clus.attrib.get("mean_binding_energy")
-                    if lb is not None:
-                        try:
-                            best_lowest = float(lb)
-                        except ValueError:
-                            pass
-                    if mb is not None:
-                        try:
-                            best_mean = float(mb)
-                        except ValueError:
-                            pass
-                    break
+    # --- Vina scoring helpers -------------------------------------------------
 
-    return {
-        "run_energies": run_energies,
-        "best_cluster_lowest": best_lowest,
-        "best_cluster_mean": best_mean,
-    }
+    def _run_vina_for_job(self, job: DiffSBDDJob, pdb_path: str) -> None:
+        """Run AutoDock-GPU pipeline via utils.vina for each ligand and
+        write Vina-like scores back into the SDF as VINA_SCORE.
 
+        This is a best-effort post-processing step:
+          - requires utils.vina and external tools (mk_prepare_receptor.py,
+            obabel, autogrid4, autodock_gpu_128wi)
+          - ignores all errors so DiffSBDD results are still usable.
+        """
+        if not _HAVE_VINA or vina is None:
+            logger.info("Vina module not available; skipping Vina scoring for job %s", job.id)
+            return
+        if not os.path.isfile(job.outfile):
+            return
 
-def prepare_receptor_maps(
-    protein_pdb: str,
-    ligand_sdf: str,
-    out_prefix: Optional[str] = None,
-    padding: float = 6.0,
-) -> PreparedReceptor:
-    """Prepare receptor once (PDBQT + GPF + maps) using the provided ligand box."""
-    protein_pdb_path = Path(protein_pdb).resolve()
-    ligand_sdf_path = Path(ligand_sdf).resolve()
-    prefix = out_prefix or protein_pdb_path.stem
-    receptor_pdbqt, receptor_gpf = prepare_receptor(
-        protein_pdb=protein_pdb_path,
-        ligand_sdf=ligand_sdf_path,
-        out_prefix=prefix,
-        padding=padding,
-    )
-    maps_fld = run_autogrid(receptor_gpf)
-    return PreparedReceptor(
-        protein_pdb=protein_pdb_path,
-        out_prefix=prefix,
-        receptor_pdbqt=receptor_pdbqt,
-        receptor_gpf=receptor_gpf,
-        maps_fld=maps_fld,
-    )
+        try:
+            suppl = SDMolSupplier(job.outfile, removeHs=False)
+            mols: List[Chem.Mol] = [m for m in suppl if m]
+            if not mols:
+                return
 
+            # Write each molecule to a temporary SDF and score it
+            tmp_dir = os.path.dirname(job.outfile)
+            scored: List[Chem.Mol] = []
+            for idx, mol in enumerate(mols):
+                try:
+                    tmp_sdf = os.path.join(tmp_dir, f"_vina_tmp_{idx+1}.sdf")
+                    w = SDWriter(tmp_sdf)
+                    w.write(mol)
+                    w.close()
 
-def score_ligand_with_prepared(
-    prepared: PreparedReceptor,
-    ligand_sdf: str,
-    nrun: int = 50,
-) -> Tuple[Optional[float], Path, Path]:
-    """Score a ligand using a precomputed receptor/mapping."""
-    ligand_sdf_path = Path(ligand_sdf).resolve()
-    ligand_pdbqt = prepare_ligand_with_obabel(ligand_sdf_path)
-    xml_file = run_autodock_gpu(
-        maps_fld=prepared.maps_fld,
-        ligand_pdbqt=ligand_pdbqt,
-        nrun=nrun,
-    )
-    parsed = parse_autodock_xml(xml_file)
-    best_score = parsed["best_cluster_lowest"]
-    if best_score is None and parsed["run_energies"]:
-        best_score = min(parsed["run_energies"])
-    return best_score, xml_file, ligand_pdbqt
+                    try:
+                        best, _xml = vina.run_full_pipeline(
+                            protein_pdb=pdb_path,
+                            ligand_sdf=tmp_sdf,
+                        )
+                    except Exception as e:  # pragma: no cover - external tools
+                        logger.error("Vina pipeline failed for mol %d in job %s: %s", idx, job.id, e)
+                        best = None
 
+                    if best is not None:
+                        mol.SetProp("VINA_SCORE", f"{best:.3f}")
+                except Exception:
+                    logger.exception("Error scoring molecule %d in job %s", idx, job.id)
+                finally:
+                    # Clean up temp file if it exists
+                    try:
+                        if os.path.isfile(tmp_sdf):
+                            os.remove(tmp_sdf)
+                    except Exception:
+                        pass
+                scored.append(mol)
 
-def run_full_pipeline(
-    protein_pdb: str,
-    ligand_sdf: str,
-    out_prefix: Optional[str] = None,
-    padding: float = 6.0,
-    nrun: int = 50,
-) -> Tuple[Optional[float], Path]:
-    """
-    Full pipeline:
+            # Rewrite SDF with VINA_SCORE properties
+            try:
+                writer = SDWriter(job.outfile)
+                for m in scored:
+                    writer.write(m)
+                writer.close()
+            except Exception:
+                logger.exception("Failed to write Vina-scored SDF for job %s", job.id)
+        except Exception:
+            logger.exception("Unexpected error during Vina scoring for job %s", job.id)
 
-      1) mk_prepare_receptor.py -i <protein>.pdb -o <name> -p -v -g \
-            --box_enveloping <ligand>.sdf --padding 6
-      2) obabel <ligand>.sdf -O <ligand>.pdbqt
-      3) autogrid4 -p <protein>.gpf -l <protein>.glg
-      4) autodock_gpu_128wi --ffile <protein>.maps.fld \
-                            --lfile <ligand>.pdbqt \
-                            --nrun <nrun>
+    def start_job(self,
+                  pdb_id: Optional[str],
+                  filename: Optional[str],
+                  ref_ligand: str,
+                  n_samples: int,
+                  num_nodes_lig: Optional[int] = None,
+                  timesteps: Optional[int] = None,
+                  resamplings: Optional[int] = None,
+                  jump_length: Optional[int] = None,
+                  keep_all_fragments: bool = False,
+                  sanitize: bool = False,
+                  relax: bool = False) -> DiffSBDDJob:
+        if not self.is_configured():
+            raise RuntimeError("DiffSBDD not configured. Set DIFFSBDD_REPO, DIFFSBDD_PYTHON, DIFFSBDD_CHECKPOINT.")
 
-    Then parse XML and return 'vina-like' best score:
+        pdb_path = self.ensure_pdb_local(pdb_id, filename)
+        job_id = str(uuid.uuid4())
+        outdir = os.path.join(self.uploads_dir, 'diffsbdd', job_id)
+        os.makedirs(outdir, exist_ok=True)
+        outfile = os.path.join(outdir, 'output.sdf')
+        log_file = os.path.join(outdir, 'run.log')
 
-      - Prefer best_cluster_lowest (cluster_rank=1)
-      - Fallback to min(run_energies) if needed
+        # Resolve reference ligand path: if it's just a filename, assume uploads/ligands
+        lig_path = ref_ligand
+        if lig_path and not os.path.isabs(lig_path) and not os.path.dirname(lig_path):
+            lig_dir = os.path.join(self.uploads_dir, 'ligands')
+            cand = os.path.join(lig_dir, lig_path)
+            if os.path.isfile(cand):
+                lig_path = cand
 
-    Returns:
-        (best_score, xml_file)
-    """
-    prepared = prepare_receptor_maps(
-        protein_pdb=protein_pdb,
-        ligand_sdf=ligand_sdf,
-        out_prefix=out_prefix,
-        padding=padding,
-    )
-    best_score, xml_file, _ = score_ligand_with_prepared(
-        prepared=prepared,
-        ligand_sdf=ligand_sdf,
-        nrun=nrun,
-    )
-    return best_score, xml_file
+        cmd = [
+            self.python_path,
+            os.path.join(self.repo_path, 'generate_ligands.py'),
+            self.checkpoint_path,
+            '--pdbfile', pdb_path,
+            '--outfile', outfile,
+            '--ref_ligand', lig_path,
+            '--n_samples', str(int(n_samples)),
+        ]
+        if num_nodes_lig is not None:
+            cmd += ['--num_nodes_lig', str(int(num_nodes_lig))]
+        if timesteps is not None:
+            cmd += ['--timesteps', str(int(timesteps))]
+        if resamplings:
+            cmd += ['--resamplings', str(int(resamplings))]
+        if jump_length:
+            cmd += ['--jump_length', str(int(jump_length))]
+        if keep_all_fragments:
+            cmd += ['--all_frags']
+        if sanitize:
+            cmd += ['--sanitize']
+        if relax:
+            cmd += ['--relax']
 
+        job = DiffSBDDJob(id=job_id, state='running', message='Starting DiffSBDD...', n_samples=n_samples,
+                           outfile=outfile, log_file=log_file)
+        self.jobs[job_id] = job
 
-if __name__ == "__main__":
-    import argparse
+        def _run():
+            try:
+                with open(log_file, 'w', encoding='utf-8', errors='ignore') as lf:
+                    lf.write('Command: ' + ' '.join([f'"{c}"' if ' ' in str(c) else str(c) for c in cmd]) + '\n')
+                    lf.flush()
+                    proc = subprocess.Popen(cmd, cwd=self.repo_path, stdout=lf, stderr=subprocess.STDOUT, shell=False)
+                    job.proc = proc
+                    ret = proc.wait()
+                job.finished_at = time.time()
+                if ret == 0 and os.path.isfile(outfile):
+                    # Post-process: add SA_SCORE and VINA_SCORE to each generated ligand if possible
+                    self._annotate_sascore(job)
+                    try:
+                        self._run_vina_for_job(job, pdb_path=pdb_path)
+                    except Exception:
+                        logger.exception("Vina scoring failed for job %s", job.id)
+                    job.state = 'success'
+                    job.message = 'Completed'
+                else:
+                    job.state = 'failed'
+                    job.message = f'Process exited with code {ret}'
+            except Exception as e:
+                job.finished_at = time.time()
+                job.state = 'failed'
+                job.message = f'Error: {e}'
 
-    parser = argparse.ArgumentParser(
-        description="Run AutoDock-GPU pipeline and extract Vina-like score from XML."
-    )
-    parser.add_argument("--protein", "-r", required=True, help="Receptor PDB file")
-    parser.add_argument("--ligand", "-l", required=True, help="Ligand SDF file")
-    parser.add_argument("--out_prefix", "-o", help="Base name for receptor/gpf/maps files")
-    parser.add_argument("--padding", "-p", type=float, default=6.0, help="Box padding in Å")
-    parser.add_argument("--nrun", "-n", type=int, default=50, help="Number of docking runs")
-    args = parser.parse_args()
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return job
 
-    try:
-        best, xml_path = run_full_pipeline(
-            protein_pdb=args.protein,
-            ligand_sdf=args.ligand,
-            out_prefix=args.out_prefix,
-            padding=args.padding,
-            nrun=args.nrun,
+    def count_generated_molecules(self, job: DiffSBDDJob) -> int:
+        try:
+            if not os.path.isfile(job.outfile):
+                return 0
+            count = 0
+            with open(job.outfile, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.strip() == '$$$$':
+                        count += 1
+            return count
+        except Exception:
+            return 0
+
+    def get_status(self, job_id: str) -> Dict:
+        job = self.jobs.get(job_id)
+        if not job:
+            return {'exists': False}
+        # Estimate progress based on molecules count relative to target
+        mols = self.count_generated_molecules(job)
+        progress = 5
+        if job.n_samples > 0:
+            progress = min(95, int(5 + 90 * (mols / max(1, job.n_samples))))
+        if job.state == 'success':
+            progress = 100
+        if job.state == 'failed':
+            progress = min(progress, 99)
+        # Read last log lines (tail)
+        tail = ''
+        try:
+            if os.path.isfile(job.log_file):
+                with open(job.log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                    tail = ''.join(lines[-20:])
+        except Exception:
+            pass
+        # Build a URL for download relative to /uploads route
+        rel_outfile = os.path.relpath(job.outfile, self.uploads_dir).replace('\\', '/')
+        return {
+            'exists': True,
+            'job_id': job.id,
+            'state': job.state,
+            'message': job.message,
+            'progress': progress,
+            'molecules': mols,
+            'outfile_url': f"/uploads/{rel_outfile}" if os.path.isfile(job.outfile) else None,
+            'log_tail': tail,
+        }
+
+    def get_job(self, job_id: str) -> Optional[DiffSBDDJob]:
+        return self.jobs.get(job_id)
+
+    def get_job_dir(self, job_id: str) -> str:
+        return os.path.join(self.uploads_dir, 'diffsbdd', job_id)
+
+    def convert_sdf_to_pdb(self, job_id: str, select: str = 'first') -> Optional[str]:
+        """Convert a job's SDF to PDB using RDKit in the DiffSBDD env. Returns output path or None."""
+        job = self.get_job(job_id)
+        if not job:
+            return None
+
+    def list_sdf_molecules(self, job_id: str):
+        """Return list of dicts {index, title, vina, sa, qed} for molecules.
+
+        SA and QED come from SDF properties SA_SCORE and QED if present.
+        Vina score (if available) is read from VINA_SCORE or Vina_score property.
+        """
+        job = self.get_job(job_id)
+        if not job or not os.path.isfile(job.outfile):
+            return []
+        script = (
+            "import sys, json\n"
+            "from rdkit import Chem\n"
+            "mols = [m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]\n"
+            "out = []\n"
+            "for i, m in enumerate(mols):\n"
+            "    title = m.GetProp('_Name') if m.HasProp('_Name') else f'mol_{i+1}'\n"
+            "    sa = m.GetProp('SA_SCORE') if m.HasProp('SA_SCORE') else None\n"
+            "    qed = m.GetProp('QED') if m.HasProp('QED') else None\n"
+            "    vina = None\n"
+            "    pname = None\n"
+            "    for key in m.GetPropNames():\n"
+            "        if key.upper() in ['VINA_SCORE', 'VINA', 'VINA_SCORE_KCAL_MOL']:\n"
+            "            pname = key\n"
+            "            break\n"
+            "    if pname is not None:\n"
+            "        vina = m.GetProp(pname)\n"
+            "    out.append({'index': i, 'title': title, 'sa': sa, 'qed': qed, 'vina': vina})\n"
+            "print(json.dumps(out))\n"
         )
-        print(f"XML output: {xml_path}")
-        if best is not None:
-            print(f"Best Vina-like score (kcal/mol): {best:.3f}")
-        else:
-            print("Could not determine best score from XML.")
-    except AutoDockGPUPipelineError as e:
-        print(f"[ERROR] {e}")
-        raise SystemExit(1)
+        try:
+            ret = subprocess.run([self.python_path, '-c', script, job.outfile], cwd=self.repo_path,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            if ret.returncode == 0 and ret.stdout:
+                import json as _json
+                return _json.loads(ret.stdout.strip())
+            logger.error('List SDF failed: rc=%s err=%s', ret.returncode, ret.stderr)
+            return []
+        except Exception as e:
+            logger.exception('List SDF error: %s', e)
+            return []
+
+    def convert_sdf_to_pdb_index(self, job_id: str, index: int) -> Optional[str]:
+        """Convert one specific molecule (0-based index) from SDF to a PDB file and return its path."""
+        job = self.get_job(job_id)
+        if not job or not os.path.isfile(job.outfile):
+            return None
+        outdir = os.path.dirname(job.outfile)
+        pdb = os.path.join(outdir, f'output_{index+1}.pdb')
+        if os.path.isfile(pdb):
+            return pdb
+        script = (
+            "import sys; from rdkit import Chem; "
+            "idx=int(sys.argv[2]); mols=[m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]; "
+            "assert 0 <= idx < len(mols), 'Index out of range'; Chem.MolToPDBFile(mols[idx], sys.argv[3])"
+        )
+        try:
+            ret = subprocess.run([self.python_path, '-c', script, job.outfile, str(index), pdb], cwd=self.repo_path,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            if ret.returncode == 0 and os.path.isfile(pdb):
+                return pdb
+            logger.error('Index conversion failed: rc=%s err=%s', ret.returncode, ret.stderr)
+            return None
+        except Exception as e:
+            logger.exception('Index conversion error: %s', e)
+            return None
+        sdf = job.outfile
+        if not os.path.isfile(sdf):
+            return None
+        outdir = os.path.dirname(sdf)
+        pdb = os.path.join(outdir, 'output.pdb')
+        if os.path.isfile(pdb):
+            return pdb
+        # Prepare a tiny RDKit script
+        script = (
+            "import sys; from rdkit import Chem; "
+            "mols=[m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]; "
+            "assert mols, 'No molecules in SDF'; "
+            "mol = mols[0]; "
+            "Chem.MolToPDBFile(mol, sys.argv[2])"
+        )
+        try:
+            ret = subprocess.run([self.python_path, '-c', script, sdf, pdb], cwd=self.repo_path,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            if ret.returncode == 0 and os.path.isfile(pdb):
+                return pdb
+            logger.error('RDKit conversion failed: rc=%s, err=%s', ret.returncode, ret.stderr)
+            return None
+        except Exception as e:
+            logger.exception('RDKit conversion error: %s', e)
+            return None
+
+
+# Singleton helper
+_runner_instance: Optional[DiffSBDDRunner] = None
+
+
+def get_runner(uploads_dir: str) -> DiffSBDDRunner:
+    global _runner_instance
+    if _runner_instance is None:
+        _runner_instance = DiffSBDDRunner(uploads_dir=uploads_dir)
+    return _runner_instance
