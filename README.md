@@ -1,123 +1,151 @@
-# MoleAG
+# SBProbMol3
 
-A lightweight web app for structure-conditioned molecular generation and 3D visualization. It integrates DiffSBDD for ligand generation, uses RDKit to convert SDF to PDB, and visualizes proteins/ligands with NGL.
+SBProbMol3 is a Flask web app for structure-based drug design workflows:
 
-## Highlights
-- Target selection: choose curated proteins or upload your own PDB.
-- Pocket definition: simple "Reference Ligand / Pocket" field (e.g., `A:300`).
-- Sampling: configure DiffSBDD parameters (n_samples, timesteps, etc.).
-- Job lifecycle: start, live progress, logs, and result artifacts.
-- Results: list generated molecules; click to visualize with the selected protein.
-- Visualization: NGL viewer with cartoon/stick/surface, quality and opacity controls.
+- Browse/select a protein target (curated list or upload your own PDB)
+- Select a reference ligand (upload SDF/MOL/PDB)
+- Generate candidate ligands via the Flowr/“DiffSBDD” generation pipeline (runs as a subprocess)
+- Inspect results in-browser with an NGL viewer and download artifacts
+- (Optional) run quick MD with FairChem (ASE + FAIRChemCalculator) and view the trajectory as PDB
+- (Optional) annotate generated ligands with SA score/QED (RDKit) and docking scores (AutoDock-GPU toolchain)
 
-## Requirements
-- OS: Ubuntu 20.04/22.04 recommended (Windows for local dev is OK; production on Linux preferred).
-- NVIDIA GPU with CUDA 11.8 (optional, recommended). CPU works but slower.
-- Conda (Miniconda/Anaconda) for DiffSBDD environment.
-- Python 3.10+ for the web app (can reuse DiffSBDD env or a separate venv).
+This repo contains the web UI + orchestration layer; it expects external model code/checkpoints for generation.
 
-### DiffSBDD environment (conda)
-Use the environment.yaml from DiffSBDD (example pins):
-- python=3.10.4, pytorch=2.0.1 (CUDA 11.8), cudatoolkit=11.8
-- pytorch-scatter=2.1.2, pytorch-lightning=1.8.4, torchmetrics=1.4.2
-- rdkit=2022.03.2, openbabel=3.1.1, biopython, scipy, numpy, pandas, networkx, seaborn, tqdm, protobuf 3.20.*
-- channels: pyg, pytorch, nvidia, anaconda, conda-forge, defaults
+## Quickstart
 
-## Setup
+### 1) Create the environment
 
-1) Clone
+The simplest option is to use the provided conda environment file:
+
 ```bash
-git clone https://github.com/arneschneuing/DiffSBDD.git
-git clone https://github.com/Tenzo-0/MoleAG.git
+cd SBProbMol3_1
+conda env create -f environment.yaml
+conda activate SB
 ```
 
-2) Create the DiffSBDD env
+Notes:
+
+- GPU support is optional but recommended for ligand generation.
+- The MD feature additionally requires `ase` and `fairchem` (see “MD module” below).
+
+### 2) Configure the generation backend (Flowr)
+
+The server starts generation jobs by invoking a Python interpreter that has the Flowr code available.
+Set these environment variables before running the app:
+
+- `DIFFSBDD_REPO`: path to the Flowr repo (contains the `flowr` Python package)
+- `DIFFSBDD_PYTHON`: path to the Python executable in the Flowr environment
+- `DIFFSBDD_CHECKPOINT`: path to a model checkpoint file
+
+Example:
+
 ```bash
-cd DiffSBDD
-conda env create -f DiffSBDD -n diffsbdd
-conda activate diffsbdd
+export DIFFSBDD_REPO=/abs/path/to/flowr_root
+export DIFFSBDD_PYTHON=/abs/path/to/conda/env/bin/python
+export DIFFSBDD_CHECKPOINT=/abs/path/to/flowr_root_v2.ckpt
 ```
 
-5) Download model checkpoints
-- You need one or more DiffSBDD model checkpoints (e.g., conditional and/or unconditional).
+If you do not set them, the app falls back to local developer defaults defined in [utils/diffsbdd.py](utils/diffsbdd.py).
+
+### 3) Run the web app
+
 ```bash
-wget -P checkpoints/ https://zenodo.org/record/8183747/files/crossdocked_fullatom_cond.ckpt
+python app.py
 ```
 
-3) Install app dependencies (Flask, etc.)
+Then open `http://localhost:5000`.
+
+## How it works
+
+### Web workflow
+
+The UI guides you through four steps:
+
+1. **Target selection**: pick from curated targets or upload a `.pdb`
+2. **Pocket/reference**: select/upload a reference ligand (used as the “ligand_file” input)
+3. **Sampling parameters**: choose `n_samples`, `timesteps`, etc.
+4. **Generation & results**: monitor progress, list molecules, view them in NGL, download the SDF
+
+### Outputs and storage
+
+Uploaded files and generated artifacts are stored under [database/](database/):
+
+- `database/proteins/`: uploaded PDBs
+- `database/ligands/`: uploaded ligand files
+- `database/diffsbdd/<job_id>/`: generation outputs (SDF, logs, derived PDBs)
+- `database/MD/` and `database/MD/temp/`: MD inputs and cached trajectory conversions
+
+Make sure this folder is writable by the process running Flask/Gunicorn.
+
+## Key routes (API)
+
+- `POST /upload_pdb` – upload a protein PDB
+- `POST /upload_ligand` – upload a ligand file (PDB/MOL/SDF)
+- `POST /save_sampling_config` – store sampling settings in the session
+- `POST /diffsbdd/start` – start a generation job
+- `GET /diffsbdd/status/<job_id>` – poll job status
+- `GET /diffsbdd/result/<job_id>/sdf` – download job SDF
+- `GET /diffsbdd/result/<job_id>/list` – list molecules in the SDF
+- `GET /diffsbdd/result/<job_id>/pdb/<index>` – convert and serve a single molecule as PDB
+- `GET /md` – MD viewer page
+- `POST /md/upload` – upload MD input files
+- `POST /md/run` – run FairChem MD (SDF only), convert to PDB and return a URL
+- `POST /md/import_generated` – split a generated job SDF into per-ligand SDFs for MD
+
+## Optional modules
+
+### MD module (FairChem + ASE)
+
+The MD page (`/md`) can run a short Langevin dynamics simulation using FairChem models.
+This requires:
+
+- `ase` (and the `ase` CLI, for `ase convert`)
+- `fairchem` (imported as `fairchem.core`)
+
+If your environment doesn’t include these, you can add them (example):
+
 ```bash
-cd
-cd MoleAG
-pip install -U pip setuptools wheel
-pip install -e .  # if your pyproject lists deps
+pip install ase fairchem-core
 ```
 
-4) Configure environment variables
-- DIFFSBDD_REPO: absolute path to DiffSBDD repo
-- DIFFSBDD_PYTHON: full path to the python inside the `diffsbdd` conda env
-- DIFFSBDD_CHECKPOINT: path to your DiffSBDD model checkpoint file
+### Docking score annotation (AutoDock-GPU toolchain)
+
+After generation completes, the app can optionally annotate the output SDF with docking scores.
+This is best-effort and requires external binaries on `PATH`, including:
+
+- `mk_prepare_receptor.py`
+- `obabel`
+- `autogrid4`
+- `autodock_gpu_128wi`
+
+If unavailable, the app will still generate ligands; it just won’t add `VINA_SCORE` properties.
+
+## Deployment
+
+For production, run behind a reverse proxy:
+
 ```bash
-#example
-export DIFFSBDD_REPO=/home/user/DiffSBDD
-export DIFFSBDD_PYTHON=/home/user/anaconda3/envs/diffsbdd/bin/python
-export DIFFSBDD_CHECKPOINT=/home/user/DiffSBDD/checkpoints/cond.ckpt
+gunicorn -w 2 -b 0.0.0.0:5000 app:app
 ```
 
-6) Run (development)
+Set `SESSION_SECRET` to a strong value in production:
+
 ```bash
-flask run #if you want to run it in debug mode, add [--debug]
+export SESSION_SECRET='change-me'
 ```
-
-## Usage
-1. Pick a protein (or upload .pdb). The viewer loads the structure in NGL.
-2. Define the pocket with the "Reference Ligand / Pocket" input (e.g., chain:resid).
-3. Set sampling parameters and click Run Generation.
-4. Watch progress. When done, Step 4 lists generated molecules; click to visualize.
-   - The protein remains; the selected ligand replaces any previously shown ligand.
-   - Download the full SDF from the Results panel.
-
-## API (selected)
-- POST `/upload_pdb` — upload a PDB file.
-- POST `/save_sampling_config` — save UI parameters before starting a job.
-- POST `/diffsbdd/start` — start a DiffSBDD job.
-- GET `/diffsbdd/status/<job_id>` — poll job status.
-- GET `/diffsbdd/result/<job_id>/sdf` — download generated SDF.
-- GET `/diffsbdd/result/<job_id>/list` — list molecules in SDF.
-- GET `/diffsbdd/result/<job_id>/pdb/<index>` — serve PDB for a molecule index.
-- GET `/database/<filename>` — serve user-uploaded PDBs.
 
 ## Project structure
+
+```text
+app.py                # Flask app entrypoint
+routes.py             # HTTP routes (UI + API)
+data/                 # curated proteins + helpers
+templates/            # Jinja2 templates
+static/               # JS/CSS/assets (NGL-based viewer UI)
+utils/                # Flowr runner, MD script, Vina/AutoDock-GPU helpers
+database/             # uploads + job artifacts (runtime data)
 ```
-app.py
-routes.py
-utils/
-  diffsbdd.py        # DiffSBDD runner (jobs, status, SDF counting, RDKit conversions)
-static/
-  css/style.css
-  js/app.js          # NGL viewer + workflow and results UI
-  img/logo.png
-templates/
-  base.html
-  index.html
-database/            # user uploads and job artifacts
-```
-
-## Deployment (production)
-- Use Gunicorn (or uvicorn+ASGI wrapper) behind NGINX.
-- Point NGINX to serve `/static` directly and reverse-proxy to the Flask app.
-- Ensure `database/` is writable by the app service user.
-- Set the DIFFSBDD_* env vars in your systemd unit or process manager.
-
-## Troubleshooting
-- RDKit not found: make sure `DIFFSBDD_PYTHON` points to the conda env that has RDKit.
-- PyTorch/torch-scatter mismatch: install versions matching your CUDA (11.8 suggested).
-- No results listed: check `database/diffsbdd/<job_id>/run.log` and the configured checkpoint path.
-- 3D viewer blank: verify network access to `/database/<file>.pdb` or fallback to `rcsb://<pdbid>`.
-
-## Acknowledgements
-- DiffSBDD: Diffusion-based SBDD framework for conditional ligand generation.
-- NGL: WebGL-based molecular visualization library.
 
 ## License
-Add your license here (e.g., MIT).
-# SBProbMol3
+
+Add a license file if you plan to publish/distribute this project.
