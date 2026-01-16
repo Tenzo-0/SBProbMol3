@@ -60,9 +60,9 @@ class DiffSBDDRunner:
                  python_path: Optional[str] = None,
                  checkpoint_path: Optional[str] = None):
         self.uploads_dir = os.path.abspath(uploads_dir)
-        DEFAULT_REPO_PATH = "/home/user/flowr_root"
-        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/flowr_root/bin/python"
-        DEFAULT_CHECKPOINT_PATH = "/home/user/flowr_root_v2.ckpt"
+        DEFAULT_REPO_PATH = "/home/user/model"
+        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/model/bin/python"
+        DEFAULT_CHECKPOINT_PATH = "/home/user/model.ckpt"
 
         self.repo_path = repo_path or DEFAULT_REPO_PATH
         self.python_path = python_path or DEFAULT_PYTHON_PATH
