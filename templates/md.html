@@ -1,0 +1,781 @@
+{% extends "base.html" %}
+{% block title %}MD Viewer - SBProbMol3{% endblock %}
+
+{% block head %}
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;600;700&display=swap');
+:root {
+    --md-bg: #000;
+    --md-text: #fff;
+    --md-panel-bg: rgba(0,0,0,0.72);
+    --md-border: rgba(255,255,255,0.12);
+    --md-rail-bg: linear-gradient(180deg, rgba(20,20,25,0.85), rgba(10,10,12,0.9));
+    --md-panel-blur: blur(6px);
+}
+:root.theme-light {
+    --md-bg: #ffffff;
+    --md-text: #0f1116;
+    --md-panel-bg: rgba(255,255,255,0.96);
+    --md-border: rgba(0,0,0,0.12);
+    --md-rail-bg: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(240,241,245,0.96));
+}
+html, body { height: 100%; margin: 0; background: var(--md-bg); color: var(--md-text); font-family: 'Roboto', system-ui, -apple-system, "Segoe UI", sans-serif; }
+.page-shell { height: 100vh; display: flex; flex-direction: column; color: var(--md-text); font-family: 'Roboto', system-ui, -apple-system, "Segoe UI", sans-serif; }
+.page-shell a { color: var(--md-text); }
+.page-top-header { color: var(--md-text); }
+.page-top-header .nav-link { color: var(--md-text); }
+.page-top-header .nav-link.active { color: #000; background: #fff; }
+.page-shell .text-muted { color: var(--md-text) !important; }
+#viewport { width: calc(100% - 440px); height: calc(100vh - var(--page-top-header-height, 72px) - var(--page-footer-height, 56px)); background: var(--md-bg); max-width: 100%; }
+
+.md-toolbar {
+    position: fixed;
+    left: 12px; bottom: calc(var(--page-footer-height, 56px) + 12px);
+    background: var(--md-panel-bg);
+    color: var(--md-text);
+    padding: 13px 20px;
+    border-radius: 10px;
+    border: 2px solid var(--md-border);
+    font: 12px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid;
+    gap: 8px;
+    min-width: 280px;
+    user-select: none;
+    z-index: 20;
+}
+.md-toolbar .drag-handle {
+    cursor: move;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    opacity: 0.95;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+        width: calc(100% + 26px);
+    background: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.25);
+        border-radius: 10px 10px 8px 8px;
+        padding: 10px 14px;
+        margin: -5px -13px 10px -13px;
+}
+
+:root.theme-light .md-toolbar {
+    background: rgba(255,255,255,0.9);
+    border-color: rgba(0,0,0,0.12);
+}
+
+:root.theme-light .md-toolbar .drag-handle {
+    background: rgba(0,0,0,0.06);
+    border-color: rgba(0,0,0,0.12);
+}
+
+:root.theme-light .md-toolbar button {
+    background: rgba(0,0,0,0.05);
+    border-color: rgba(0,0,0,0.15);
+}
+
+:root.theme-light .md-toolbar button:hover {
+    background: rgba(0,0,0,0.08);
+}
+.md-toolbar .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.md-toolbar .row.controls { flex-wrap: nowrap; }
+.md-toolbar button {
+    background: rgba(255,255,255,0.12);
+    color: var(--md-text);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+.md-toolbar .controls button {
+    padding: 4px 8px;
+    min-width: 46px;
+    flex: 0 0 auto;
+    max-width: 120px;
+    width: auto;
+}
+.md-toolbar .controls #btnPlay {
+    padding-left: 50px;
+    padding-right: 50px;
+}
+.md-toolbar button:hover { background: rgba(255,255,255,0.18); }
+.md-toolbar input[type="range"] { width: 210px; accent-color: #fff; }
+.md-toolbar label { opacity: 0.9; }
+.md-toolbar .value { font-variant-numeric: tabular-nums; opacity: 0.9; }
+.md-toolbar .slider-wrap { position: relative; padding-top: 16px; width: 100%; }
+.md-toolbar .slider-wrap input[type="range"] { width: 100%; }
+.md-toolbar .slider-wrap .slider-min,
+.md-toolbar .slider-wrap .slider-max,
+.md-toolbar .slider-wrap .slider-value {
+    position: absolute;
+    top: 0;
+    font-size: 11px;
+    color: var(--md-text);
+    opacity: 0.9;
+}
+
+:root.theme-light .md-toolbar .slider-wrap .slider-min,
+:root.theme-light .md-toolbar .slider-wrap .slider-max,
+:root.theme-light .md-toolbar .slider-wrap .slider-value {
+    color: #1f1f23;
+}
+.md-toolbar .slider-wrap .slider-min { left: 0; }
+.md-toolbar .slider-wrap .slider-max { right: 0; }
+.md-toolbar .slider-wrap .slider-value { left: 50%; transform: translateX(-50%); }
+
+.md-empty {
+    position: absolute;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #cfd1d7;
+    text-align: center;
+    background: rgba(0,0,0,0.5);
+    padding: 1rem 1.25rem;
+    border-radius: 10px;
+}
+
+/* Ligand side panel */
+.md-right-rail {
+    position: fixed;
+    top: var(--page-top-header-height, 72px);
+    right: 0;
+    bottom: var(--page-footer-height, 56px);
+    width: 380px;
+    background: var(--md-rail-bg);
+    border-left: 1px solid var(--md-border);
+    box-shadow: -10px 0 18px rgba(0,0,0,0.45);
+    pointer-events: none;
+    z-index: 15;
+}
+
+.md-ligand-panel {
+    position: fixed;
+    top: calc(var(--page-top-header-height, 72px) + 12px);
+    right: 12px;
+    width: 340px;
+    background: var(--md-panel-bg);
+    border: 1px solid var(--md-border);
+    border-radius: 12px;
+    padding: 12px 12px 14px;
+    color: var(--md-text);
+    z-index: 25;
+    backdrop-filter: var(--md-panel-blur);
+    max-height: calc(100vh - var(--page-top-header-height, 72px) - var(--page-footer-height, 56px) - 24px);
+    display: flex;
+    flex-direction: column;
+}
+
+.md-display-panel {
+    position: fixed;
+    top: calc(var(--page-top-header-height, 72px) + 420px);
+    right: 12px;
+    width: 340px;
+    background: var(--md-panel-bg);
+    border: 1px solid var(--md-border);
+    border-radius: 12px;
+    padding: 12px 12px 14px;
+    color: var(--md-text);
+    z-index: 24;
+    backdrop-filter: var(--md-panel-blur);
+    margin-top: 0;
+}
+
+.md-display-panel .form-check { margin-bottom: 8px; color: var(--md-text); }
+.md-display-panel .form-check-label { color: var(--md-text); }
+.md-display-panel .panel-title { text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; opacity: 1; color: var(--md-text); font-weight: 700; }
+.md-display-panel .btn-outline-light { color: var(--md-text); border-color: var(--md-text); }
+.md-display-panel .btn-outline-light:hover { color: var(--md-text); border-color: var(--md-text); background: rgba(255,255,255,0.12); }
+
+.md-ligand-panel .btn-outline-light {
+    color: var(--md-text);
+    border-color: var(--md-text);
+}
+
+.md-ligand-panel .btn-outline-light:hover {
+    color: var(--md-text);
+    border-color: var(--md-text);
+    background: rgba(255,255,255,0.12);
+}
+
+.md-ligand-panel .ligand-list {
+    overflow-y: auto;
+    display: grid;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-height: 260px;
+}
+
+.md-ligand-panel .ligand-item {
+    border: 1px solid var(--md-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(255,255,255,0.04);
+    cursor: pointer;
+    color: var(--md-text);
+}
+
+.md-ligand-panel .ligand-item .title {
+    font-weight: 600;
+    color: var(--md-text);
+}
+
+.md-ligand-panel .ligand-item .actions button {
+    background: transparent;
+    border: none;
+    color: var(--md-text);
+    cursor: pointer;
+    padding: 4px 6px;
+}
+
+.md-ligand-panel .ligand-item .actions button:hover {
+    color: #ff809f;
+}
+
+.md-ligand-panel .ligand-item .status {
+    font-size: 12px;
+    opacity: 0.85;
+    margin-top: 2px;
+}
+
+.md-ligand-panel .ligand-item.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div class="page-top-header">
+        <div class="header-brand">
+            <span class="header-logo"><img src="/static/img/logo.png" alt="Logo"></span>
+            <div class="brand-text">
+                <h5 class="fw-bold mb-0">SBProbMol3</h5>
+                <small>MD Viewer</small>
+            </div>
+        </div>
+        <ul class="nav nav-pills gap-2 flex-grow-1">
+            <li class="nav-item"><a class="nav-link" href="/">Ligands generation</a></li>
+            <li class="nav-item"><a class="nav-link active" aria-current="page" href="/md">MD prediction</a></li>
+            <li class="nav-item"><a class="nav-link" href="#">Advanced evaluation</a></li>
+        </ul>
+        <button class="btn btn-outline-light btn-sm d-inline-flex align-items-center justify-content-center" id="md-theme-toggle" style="min-width: 40px; width: 40px; height: 32px;">
+            <span id="md-theme-icon">☀</span>
+        </button>
+    </div>
+
+    <div id="viewport" aria-label="Molecular dynamics viewport"></div>
+
+    <div class="md-right-rail" aria-hidden="true"></div>
+
+    <!-- Ligand selection panel -->
+    <div class="md-ligand-panel" id="md-ligand-panel">
+        <div class="panel-header d-flex align-items-center justify-content-between mb-2">
+            <div>
+                <div class="text-uppercase small fw-bold text-muted">Ligands</div>
+                <div class="fw-semibold" id="ligand-count">0 saved</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-light" id="ligand-file-btn">Add file</button>
+                <input type="file" id="ligand-file-input" accept=".pdb,.pdbqt,.mol,.sdf" hidden>
+            </div>
+        </div>
+        <div class="ligand-list" id="ligand-list" aria-label="Selected ligands"></div>
+    </div>
+
+    <!-- Display options panel -->
+    <div class="md-display-panel" id="md-display-panel">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="panel-title">Display</div>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="" id="opt-surface">
+            <label class="form-check-label" for="opt-surface">Show Surface</label>
+        </div>
+            <div class="mt-2">
+                <label class="form-label text-white mb-1" for="rng-surface-opacity">Surface opacity</label>
+                <input type="range" class="form-range" id="rng-surface-opacity" min="5" max="100" step="5" value="20">
+                <div class="small text-white" id="txt-surface-opacity">20%</div>
+            </div>
+        <button type="button" class="btn btn-sm btn-outline-light mt-2" id="btn-reset-view">Reset view</button>
+    </div>
+    <div class="md-toolbar" id="ui" hidden>
+        <div class="drag-handle" id="md-drag-handle">MD Controls</div>
+        <div class="row controls">
+            <button id="btnPlay">Play</button>
+            <button id="btnPrev">◀</button>
+            <button id="btnNext">▶</button>
+            <label style="margin-left:6px;">
+                Loop <input id="chkLoop" type="checkbox" checked>
+            </label>
+        </div>
+        <div class="row">
+            <label>Frame</label>
+            <div class="slider-wrap">
+                <span class="slider-min" id="frameMin">0</span>
+                <input id="rngFrame" type="range" min="0" max="0" step="1" value="0">
+                <span class="slider-max" id="frameMax">0</span>
+                <span class="slider-value" id="frameText">0</span>
+            </div>
+        </div>
+        <div class="row">
+            <label>Step size</label>
+            <div class="slider-wrap">
+                <span class="slider-min" id="stepMin">1</span>
+                <input id="rngStep" type="range" min="1" max="50" step="1" value="1">
+                <span class="slider-max" id="stepMax">50</span>
+                <span class="slider-value" id="stepText">1</span>
+            </div>
+        </div>
+        <div class="row">
+            <label>Play timeout</label>
+            <div class="slider-wrap">
+                <span class="slider-min" id="timeoutMin">1</span>
+                <input id="rngTimeout" type="range" min="1" max="200" step="1" value="50">
+                <span class="slider-max" id="timeoutMax">200</span>
+                <span class="slider-value" id="timeoutText">50 ms</span>
+            </div>
+        </div>
+    </div>
+    <div class="md-empty" id="md-empty" hidden>No trajectory loaded. Provide a job + index from Results or set pdb_url query.</div>
+
+    <div class="page-footer">
+        <span>© 2026 SBProbMol3</span>
+        <span class="text-muted">MD prediction</span>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/ngl@2.4.0/dist/ngl.min.js"></script>
+<script>
+(function(){
+    const params = new URLSearchParams(window.location.search);
+    const jobId = params.get('job_id');
+    const idx = params.get('index') || '0';
+    const pdbUrlParam = params.get('pdb_url');
+    const defaultUrl = pdbUrlParam || (jobId ? `/diffsbdd/result/${jobId}/pdb/${idx}` : '/database/md/md.pdb');
+
+    const viewport = document.getElementById('viewport');
+    const ui = document.getElementById('ui');
+    const empty = document.getElementById('md-empty');
+
+    const btnPlay = document.getElementById('btnPlay');
+    const btnPrev = document.getElementById('btnPrev');
+    const btnNext = document.getElementById('btnNext');
+    const chkLoop = document.getElementById('chkLoop');
+    const rngFrame = document.getElementById('rngFrame');
+    const frameText = document.getElementById('frameText');
+    const rngStep = document.getElementById('rngStep');
+    const stepText = document.getElementById('stepText');
+    const stepMin = document.getElementById('stepMin');
+    const stepMax = document.getElementById('stepMax');
+    const rngTimeout = document.getElementById('rngTimeout');
+    const timeoutText = document.getElementById('timeoutText');
+    const timeoutMin = document.getElementById('timeoutMin');
+    const timeoutMax = document.getElementById('timeoutMax');
+    const frameMin = document.getElementById('frameMin');
+    const frameMax = document.getElementById('frameMax');
+    const dragHandle = document.getElementById('md-drag-handle');
+    const optSurface = document.getElementById('opt-surface');
+    const rngSurfaceOpacity = document.getElementById('rng-surface-opacity');
+    const txtSurfaceOpacity = document.getElementById('txt-surface-opacity');
+    const btnResetView = document.getElementById('btn-reset-view');
+
+    const ligandListEl = document.getElementById('ligand-list');
+    const ligandCountEl = document.getElementById('ligand-count');
+    const ligandFileBtn = document.getElementById('ligand-file-btn');
+    const ligandFileInput = document.getElementById('ligand-file-input');
+    const themeToggle = document.getElementById('md-theme-toggle');
+    const themeIcon = document.getElementById('md-theme-icon');
+
+    let traj = null; let isPlaying = false; let stage = null; let uiBound = false; let compRef = null;
+    let ligands = [];
+    const ligandStorageKey = () => `md-ligands-${jobId || 'global'}`;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const guessExtFromUrl = (u) => {
+        if(!u) return 'pdb';
+        const clean = u.split('?')[0];
+        const m = clean.match(/\.([a-z0-9]+)$/i);
+        return m ? m[1].toLowerCase() : 'pdb';
+    };
+
+    function setFrame(i){ if(!traj) return; const max=(traj.frameCount??1)-1; const fi=clamp(i,0,max); traj.setFrame(fi); rngFrame.value=String(fi); frameText.textContent=`${fi}`; if(frameMax) frameMax.textContent = String(max); }
+    function setStepSize(step){ if(!traj?.player) return; const s=Math.max(1,Math.floor(step)); if(typeof traj.player.setParameters==='function'){traj.player.setParameters({step:s});} else {traj.player.step=s;} stepText.textContent=String(s); }
+    function setPlayTimeout(ms){ if(!traj?.player) return; const t=Math.max(1,Math.floor(ms)); if(typeof traj.player.setParameters==='function'){traj.player.setParameters({timeout:t});} else {traj.player.timeout=t;} timeoutText.textContent=`${t}`; }
+    function setLoop(loop){ if(!traj?.player) return; if('loop' in traj.player) traj.player.loop=loop; }
+    function play(){ if(!traj?.player) return; traj.player.play(); isPlaying=true; btnPlay.textContent='Pause'; }
+    function pause(){ if(!traj?.player) return; traj.player.pause(); isPlaying=false; btnPlay.textContent='Play'; }
+    function togglePlay(){ if(!traj?.player) return; isPlaying ? pause() : play(); }
+
+    function bindUi(){
+        if(uiBound) return;
+        btnPlay.addEventListener('click', togglePlay);
+        btnPrev.addEventListener('click', () => setFrame(Number(rngFrame.value)-1));
+        btnNext.addEventListener('click', () => setFrame(Number(rngFrame.value)+1));
+        chkLoop.addEventListener('change', () => setLoop(chkLoop.checked));
+        rngFrame.addEventListener('input', () => { if(isPlaying) pause(); setFrame(Number(rngFrame.value)); });
+        rngStep.addEventListener('input', () => setStepSize(Number(rngStep.value)));
+        rngTimeout.addEventListener('input', () => setPlayTimeout(Number(rngTimeout.value)));
+        window.addEventListener('keydown', (e) => {
+            if(!traj) return;
+            if(e.code === 'Space'){ e.preventDefault(); togglePlay(); }
+            if(e.code === 'ArrowLeft') setFrame(Number(rngFrame.value)-1);
+            if(e.code === 'ArrowRight') setFrame(Number(rngFrame.value)+1);
+        });
+        if(optSurface) optSurface.addEventListener('change', applyDisplayOptions);
+        if(rngSurfaceOpacity) rngSurfaceOpacity.addEventListener('input', () => {
+            const val = Number(rngSurfaceOpacity.value);
+            if(txtSurfaceOpacity) txtSurfaceOpacity.textContent = `${val}%`;
+            applyDisplayOptions();
+        });
+        if(btnResetView) btnResetView.addEventListener('click', () => {
+            if(compRef) compRef.autoView();
+        });
+        wireDrag();
+        uiBound = true;
+    }
+
+    function loadLigandState(){
+        try {
+            const stored = sessionStorage.getItem(ligandStorageKey());
+            if(stored) return JSON.parse(stored);
+        } catch(_) {}
+        return [];
+    }
+
+    async function loadServerLigands(){
+        try {
+            const res = await fetch('/md/list');
+            const data = await res.json();
+            if(!res.ok || !data.success || !Array.isArray(data.files)) return;
+            const existingUrls = new Set(ligands.map(l => l.url));
+            const merged = [...ligands];
+            data.files.forEach(f => {
+                if(existingUrls.has(f.url)) return;
+                merged.push({ label: f.name, url: f.url, ext: f.ext, filename: f.filename });
+            });
+            ligands = merged;
+            saveLigandState([...ligands]);
+        } catch(err){ console.error('Failed to load MD ligands', err); }
+    }
+
+    function applyThemeIcon(){
+        const isLight = document.documentElement.classList.contains('theme-light');
+        if(themeIcon){ themeIcon.textContent = isLight ? '☾' : '☀'; }
+    }
+
+    function applyStageBackground(){
+        if(!stage) return;
+        const isLight = document.documentElement.classList.contains('theme-light');
+        stage.setParameters({ backgroundColor: isLight ? 'white' : 'black' });
+    }
+
+    function wireThemeToggle(){
+        if(!themeToggle) return;
+        applyThemeIcon();
+        themeToggle.addEventListener('click', () => {
+            const root = document.documentElement;
+            const isLight = root.classList.toggle('theme-light');
+            if(!isLight){
+                root.classList.remove('theme-light');
+                root.classList.add('theme-dark');
+            } else {
+                root.classList.remove('theme-dark');
+            }
+            localStorage.setItem('sbprob-theme', isLight ? 'light' : 'dark');
+            applyThemeIcon();
+            applyStageBackground();
+        });
+    }
+
+    function saveLigandState(list){
+        ligands = list;
+        const persistable = list.filter(l => !l.local);
+        try { sessionStorage.setItem(ligandStorageKey(), JSON.stringify(persistable)); } catch(_) {}
+    }
+
+    function addLigand(entry, { persist=true } = {}){
+        ligands.push(entry);
+        if(persist) saveLigandState([...ligands]); else ligands = [...ligands];
+        renderLigands();
+    }
+
+    function renderLigands(){
+        if(!ligandListEl) return;
+        ligandListEl.innerHTML = '';
+        ligands.forEach((lig, idx) => {
+            const item = document.createElement('div');
+            item.className = 'ligand-item';
+            const info = document.createElement('div');
+            const label = document.createElement('div');
+            label.className = 'title';
+            label.textContent = lig.label || `Ligand ${idx+1}`;
+            info.appendChild(label);
+            const status = document.createElement('div');
+            status.className = 'status';
+            const extGuess = (lig.ext || guessExtFromUrl(lig.url || '')).toLowerCase();
+            if(lig.cachedPdbUrl){
+                status.textContent = 'Ready (cached PDB)';
+            } else if(extGuess === 'sdf' || extGuess === '.sdf'){
+                status.textContent = 'SDF – click to run MD';
+            }
+            if(status.textContent) info.appendChild(status);
+
+            item.addEventListener('click', () => handleLigandClick(lig, item, idx));
+
+            const actions = document.createElement('div');
+            actions.className = 'actions';
+            const runBtn = document.createElement('button');
+            runBtn.type = 'button';
+            runBtn.title = 'Run MD and load result';
+            runBtn.textContent = '▶ MD';
+            runBtn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                handleLigandClick(lig, item, idx, { forceRun: true, runBtn });
+            });
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button'; removeBtn.title = 'Remove';
+            removeBtn.textContent = '✕';
+                removeBtn.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    ligands.splice(idx, 1);
+                if(lig.local && lig.url) {
+                    try { URL.revokeObjectURL(lig.url); } catch(_) {}
+                }
+                saveLigandState([...ligands]);
+                renderLigands();
+                updateLigandCount();
+            });
+            actions.appendChild(runBtn);
+            actions.appendChild(removeBtn);
+            item.appendChild(info); item.appendChild(actions);
+            ligandListEl.appendChild(item);
+        });
+        updateLigandCount();
+    }
+
+    function applyDisplayOptions(){
+        if(!compRef) return;
+        compRef.removeAllRepresentations();
+        const addSurface = optSurface ? optSurface.checked : false;
+        const surfaceOpacity = rngSurfaceOpacity ? Number(rngSurfaceOpacity.value)/100 : 0.2;
+        if(addSurface) compRef.addRepresentation('surface', { opacity: surfaceOpacity, useWorker:true, color:'white' });
+        compRef.addRepresentation('ball+stick', { multipleBond:true, colorValue:'white' });
+    }
+
+    function updateLigandCount(){
+        if(ligandCountEl) ligandCountEl.textContent = `${ligands.length} items`;
+    }
+
+    function wireLigandFile(){
+        if(!ligandFileBtn || !ligandFileInput) return;
+        ligandFileBtn.addEventListener('click', () => ligandFileInput.click());
+        ligandFileInput.addEventListener('change', async () => {
+            const file = ligandFileInput.files?.[0];
+            if(!file) return;
+            try {
+                const fd = new FormData();
+                fd.append('md_file', file);
+                const res = await fetch('/md/upload', { method:'POST', body: fd });
+                const data = await res.json();
+                if(!res.ok || !data.success){
+                    console.error('Upload failed', data?.error || res.statusText);
+                    return;
+                }
+                const entry = { label: data.name || file.name, url: data.url, ext: guessExtFromUrl(data.url) };
+                addLigand(entry, { persist:true });
+            } catch (err) {
+                console.error(err);
+            } finally {
+                ligandFileInput.value = '';
+            }
+        });
+    }
+
+    function wireDrag(){
+        if(!dragHandle || !ui) return;
+        let dragging = false; let offsetX = 0; let offsetY = 0;
+        const onMove = (e) => {
+            if(!dragging) return;
+            ui.style.left = `${e.clientX - offsetX}px`;
+            ui.style.top = `${e.clientY - offsetY}px`;
+            ui.style.right = 'auto';
+            ui.style.bottom = 'auto';
+        };
+        const end = () => {
+            dragging = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', end);
+        };
+        dragHandle.addEventListener('mousedown', (e) => {
+            dragging = true;
+            const rect = ui.getBoundingClientRect();
+            offsetX = e.clientX - rect.left;
+            offsetY = e.clientY - rect.top;
+            ui.style.transition = 'none';
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', end);
+        });
+    }
+
+    function isPdbLike(ext, url){
+        const e = (ext || '').toLowerCase();
+        if(e === 'pdb' || e === '.pdb') return true;
+        if(url){
+            const clean = url.split('?')[0].toLowerCase();
+            if(clean.endsWith('.pdb')) return true;
+        }
+        return false;
+    }
+
+    function isSdfLike(ext, url){
+        const e = (ext || '').toLowerCase();
+        if(e === 'sdf') return true;
+        if(url){
+            const clean = url.split('?')[0].toLowerCase();
+            if(clean.endsWith('.sdf')) return true;
+        }
+        return false;
+    }
+
+    function setLoadingState(el, isLoading, text){
+        if(!el) return;
+        const statusEl = el.querySelector('.status');
+        if(isLoading){
+            el.classList.add('loading');
+            if(statusEl && text) statusEl.textContent = text;
+        } else {
+            el.classList.remove('loading');
+        }
+    }
+
+    async function handleLigandClick(lig, itemEl, idx, opts={}){
+        if(!lig?.url) return;
+        const preferPdbUrl = lig.cachedPdbUrl || null;
+        const extGuess = (lig.ext || guessExtFromUrl(lig.url)).toLowerCase();
+        const runBtn = opts.runBtn;
+
+        if(preferPdbUrl){
+            loadTrajectory(preferPdbUrl, 'pdb');
+            return;
+        }
+        if(isPdbLike(lig.ext, lig.url)){
+            loadTrajectory(lig.url, 'pdb');
+            return;
+        }
+        if(opts.forceRun || isSdfLike(lig.ext, lig.url) || extGuess === 'sdf' || extGuess === '.sdf'){
+            await runMdJob(lig, runBtn, itemEl, idx);
+            return;
+        }
+        loadTrajectory(lig.url, lig.ext || guessExtFromUrl(lig.url));
+    }
+
+    async function runMdJob(lig, btnEl, itemEl, ligIdx){
+        if(!lig?.url) return;
+        if(lig.cachedPdbUrl){
+            loadTrajectory(lig.cachedPdbUrl, 'pdb');
+            return;
+        }
+        if(isPdbLike(lig.ext, lig.url)){
+            loadTrajectory(lig.url, 'pdb');
+            return;
+        }
+
+        const btn = btnEl;
+        const originalText = btn ? btn.textContent : '';
+        if(btn){ btn.disabled = true; btn.textContent = 'Running…'; }
+        setLoadingState(itemEl, true, 'Running MD…');
+        try {
+            const res = await fetch('/md/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: lig.url })
+            });
+            const data = await res.json();
+            if(!res.ok || !data.success){
+                throw new Error(data?.error || res.statusText || 'MD run failed');
+            }
+            const updated = {
+                ...lig,
+                cachedPdbUrl: data.pdb_url,
+                jobId: data.job_id,
+                generated: true,
+            };
+            const idx = (typeof ligIdx === 'number' && ligIdx >= 0) ? ligIdx : ligands.indexOf(lig);
+            if(idx >= 0){
+                ligands[idx] = updated;
+                saveLigandState([...ligands]);
+                renderLigands();
+            }
+            loadTrajectory(updated.cachedPdbUrl || data.pdb_url, 'pdb');
+        } catch (err) {
+            console.error(err);
+            alert(err.message || 'Failed to run MD');
+        } finally {
+            if(btn){ btn.disabled = false; btn.textContent = originalText || '▶ MD'; }
+            setLoadingState(itemEl, false);
+        }
+    }
+
+    async function loadTrajectory(url, extHint){
+        if(!stage) return;
+        ui.hidden = true; empty.hidden = false; isPlaying = false; btnPlay.textContent = 'Play';
+        try {
+            stage.removeAllComponents();
+            const ext = extHint || guessExtFromUrl(url || defaultUrl);
+            const comp = await stage.loadFile(url || defaultUrl, { ext, asTrajectory:true, firstModelOnly:false, defaultRepresentation:false });
+            compRef = comp;
+            const trajEl = comp.addTrajectory();
+            traj = trajEl?.trajectory || comp.trajList?.[0]?.trajectory;
+            if(!traj){ console.error('No trajectory created from multi-model PDB.'); empty.hidden=false; return; }
+            if(!traj.player){ traj.setPlayer(new NGL.TrajectoryPlayer(traj, { step:1, timeout:50, loop:true })); }
+
+            const max = (traj.frameCount ?? 1) - 1;
+            rngFrame.max = String(max);
+            rngFrame.value = '0';
+            frameText.textContent = '0';
+            if(frameMin) frameMin.textContent = '0';
+            if(frameMax) frameMax.textContent = String(max);
+            rngStep.value = String(traj.player.step ?? 1); setStepSize(Number(rngStep.value));
+            rngTimeout.value = String(traj.player.timeout ?? 50); setPlayTimeout(Number(rngTimeout.value));
+            chkLoop.checked = (traj.player.loop ?? true); setLoop(chkLoop.checked);
+
+            if(optSurface) optSurface.checked = false;
+            if(rngSurfaceOpacity && txtSurfaceOpacity){ rngSurfaceOpacity.value = '20'; txtSurfaceOpacity.textContent = '20%'; }
+            applyDisplayOptions();
+            if(compRef) compRef.autoView();
+
+            ui.hidden = false; empty.hidden = true; play();
+            try {
+                traj.signals?.frameChanged?.add((i) => { rngFrame.value = String(i); frameText.textContent = `${i} / ${max}`; });
+            } catch {}
+        } catch (err) {
+            console.error(err); empty.hidden = false;
+        }
+    }
+
+    async function init(){
+        stage = new NGL.Stage('viewport', { backgroundColor: 'black' });
+        window.addEventListener('resize', () => stage.handleResize(), false);
+        bindUi();
+        applyStageBackground();
+
+        ligands = loadLigandState();
+        await loadServerLigands();
+        if(stepMin) stepMin.textContent = rngStep.min;
+        if(stepMax) stepMax.textContent = rngStep.max;
+        if(timeoutMin) timeoutMin.textContent = rngTimeout.min;
+        if(timeoutMax) timeoutMax.textContent = rngTimeout.max;
+        renderLigands();
+        wireLigandFile();
+        wireThemeToggle();
+        loadTrajectory(defaultUrl, guessExtFromUrl(defaultUrl));
+    }
+
+    init();
+})();
+</script>
+{% endblock %}

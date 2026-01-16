@@ -123,6 +123,7 @@ def run_autodock_gpu(
     maps_fld: Path,
     ligand_pdbqt: Path,
     nrun: int = 50,
+    workdir: Optional[Path] = None,
 ) -> Path:
     """
     Run docking with AutoDock-GPU (NO -O; expect XML):
@@ -133,7 +134,7 @@ def run_autodock_gpu(
 
     AutoDock-GPU will create an XML file, typically <ligand_stem>.xml
     """
-    workdir = maps_fld.parent
+    workdir = workdir or maps_fld.parent
     cmd = [
         "autodock_gpu_128wi",
         "--ffile", str(maps_fld),
@@ -217,6 +218,7 @@ def run_full_pipeline(
     out_prefix: Optional[str] = None,
     padding: float = 6.0,
     nrun: int = 50,
+    workdir: Optional[str] = None,
 ) -> Tuple[Optional[float], Path]:
     """
     Full pipeline:
@@ -239,6 +241,9 @@ def run_full_pipeline(
     """
     protein_pdb_path = Path(protein_pdb).resolve()
     ligand_sdf_path = Path(ligand_sdf).resolve()
+    workdir_path = Path(workdir).resolve() if workdir else None
+    if workdir_path:
+        workdir_path.mkdir(parents=True, exist_ok=True)
 
     if out_prefix is None:
         out_prefix = protein_pdb_path.stem
@@ -249,19 +254,24 @@ def run_full_pipeline(
         ligand_sdf=ligand_sdf_path,
         out_prefix=out_prefix,
         padding=padding,
+        workdir=workdir_path,
     )
 
     # 2) ligand prep
-    ligand_pdbqt = prepare_ligand_with_obabel(ligand_sdf_path)
+    ligand_pdbqt = prepare_ligand_with_obabel(
+        ligand_sdf_path,
+        ligand_pdbqt=(workdir_path / f"{ligand_sdf_path.stem}.pdbqt") if workdir_path else None,
+    )
 
     # 3) autogrid
-    maps_fld = run_autogrid(receptor_gpf)
+    maps_fld = run_autogrid(receptor_gpf, workdir=workdir_path)
 
     # 4) autodock-gpu (XML out)
     xml_file = run_autodock_gpu(
         maps_fld=maps_fld,
         ligand_pdbqt=ligand_pdbqt,
         nrun=nrun,
+        workdir=workdir_path,
     )
 
     # 5) parse XML

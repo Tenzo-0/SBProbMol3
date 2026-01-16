@@ -5,6 +5,7 @@ import threading
 import subprocess
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, List
 
 from urllib.request import urlretrieve
@@ -49,12 +50,8 @@ class DiffSBDDJob:
 
 class DiffSBDDRunner:
     """
-    Thin wrapper to run DiffSBDD's generate_ligands.py as a subprocess.
-    Requires environment variables:
-      - DIFFSBDD_PYTHON: path to Python interpreter in the DiffSBDD conda env (python.exe)
-      - DIFFSBDD_REPO: local path to the DiffSBDD repo root
-
-      - DIFFSBDD_CHECKPOINT: path to a .ckpt model file
+    Thin wrapper to run Flowr's flowr.gen.generate_from_pdb as a subprocess.
+    Expects a Flowr-ready Python interpreter, repository path, and checkpoint path.
     """
 
     def __init__(self,
@@ -63,9 +60,9 @@ class DiffSBDDRunner:
                  python_path: Optional[str] = None,
                  checkpoint_path: Optional[str] = None):
         self.uploads_dir = os.path.abspath(uploads_dir)
-        DEFAULT_REPO_PATH = "/home/user/DiffSBDD"
-        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/ds/bin/python"
-        DEFAULT_CHECKPOINT_PATH = "/home/user/DiffSBDD/checkpoints/crossdocked_fullatom_cond.ckpt"
+        DEFAULT_REPO_PATH = "/home/user/flowr_root"
+        DEFAULT_PYTHON_PATH = "/home/user/anaconda3/envs/flowr_root/bin/python"
+        DEFAULT_CHECKPOINT_PATH = "/home/user/flowr_root_v2.ckpt"
 
         self.repo_path = repo_path or DEFAULT_REPO_PATH
         self.python_path = python_path or DEFAULT_PYTHON_PATH
@@ -82,23 +79,23 @@ class DiffSBDDRunner:
     def ensure_pdb_local(self, pdb_id: Optional[str], filename: Optional[str]) -> str:
         """Return absolute path to a local PDB file.
 
-        Proteins are stored under uploads/proteins. If not present, try to download
+        Proteins are stored under database/proteins. If not present, try to download
         by pdb_id into that folder.
         """
         proteins_dir = os.path.join(self.uploads_dir, 'proteins')
         os.makedirs(proteins_dir, exist_ok=True)
 
-        # 1) If an uploaded filename is provided and exists under uploads/proteins, use it
+        # 1) If an uploaded filename is provided and exists under database/proteins, use it
         if filename:
             local = os.path.join(proteins_dir, filename)
             if os.path.isfile(local):
                 return local
-        # 2) If a file with the PDB ID exists in uploads/proteins, use it
+        # 2) If a file with the PDB ID exists in database/proteins, use it
         if pdb_id:
             candidate = os.path.join(proteins_dir, f"{pdb_id}.pdb")
             if os.path.isfile(candidate):
                 return candidate
-        # 3) Try to download from RCSB using pdb_id into uploads/proteins
+        # 3) Try to download from RCSB using pdb_id into database/proteins
         if pdb_id:
             url = f"https://files.rcsb.org/download/{pdb_id.upper()}.pdb"
             dest = os.path.join(proteins_dir, f"{pdb_id}.pdb")
@@ -167,8 +164,9 @@ class DiffSBDDRunner:
             if not mols:
                 return
 
-            # Write each molecule to a temporary SDF and score it
-            tmp_dir = os.path.dirname(job.outfile)
+            # Write each molecule to a temporary SDF and score it inside a per-job Vina temp folder
+            tmp_dir = os.path.join(os.path.dirname(job.outfile), "vina_tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
             scored: List[Chem.Mol] = []
             for idx, mol in enumerate(mols):
                 try:
@@ -181,6 +179,8 @@ class DiffSBDDRunner:
                         best, _xml = vina.run_full_pipeline(
                             protein_pdb=pdb_path,
                             ligand_sdf=tmp_sdf,
+                            workdir=tmp_dir,
+                            out_prefix=f"{Path(job.outfile).stem}_vina",
                         )
                     except Exception as e:  # pragma: no cover - external tools
                         logger.error("Vina pipeline failed for mol %d in job %s: %s", idx, job.id, e)
@@ -191,7 +191,7 @@ class DiffSBDDRunner:
                 except Exception:
                     logger.exception("Error scoring molecule %d in job %s", idx, job.id)
                 finally:
-                    # Clean up temp file if it exists
+                    # Clean up temp ligand file if it exists
                     try:
                         if os.path.isfile(tmp_sdf):
                             os.remove(tmp_sdf)
@@ -215,7 +215,9 @@ class DiffSBDDRunner:
                   filename: Optional[str],
                   ref_ligand: str,
                   n_samples: int,
-                  num_nodes_lig: Optional[int] = None,
+                  batch_cost: int = 20,
+                  num_workers: int = 12,
+                  coord_noise_scale: float = 0.1,
                   timesteps: Optional[int] = None,
                   resamplings: Optional[int] = None,
                   jump_length: Optional[int] = None,
@@ -223,16 +225,15 @@ class DiffSBDDRunner:
                   sanitize: bool = False,
                   relax: bool = False) -> DiffSBDDJob:
         if not self.is_configured():
-            raise RuntimeError("DiffSBDD not configured. Set DIFFSBDD_REPO, DIFFSBDD_PYTHON, DIFFSBDD_CHECKPOINT.")
+            raise RuntimeError("Flowr not configured. Set repo, python, and checkpoint paths.")
 
         pdb_path = self.ensure_pdb_local(pdb_id, filename)
         job_id = str(uuid.uuid4())
         outdir = os.path.join(self.uploads_dir, 'diffsbdd', job_id)
         os.makedirs(outdir, exist_ok=True)
-        outfile = os.path.join(outdir, 'output.sdf')
         log_file = os.path.join(outdir, 'run.log')
 
-        # Resolve reference ligand path: if it's just a filename, assume uploads/ligands
+        # Resolve reference ligand path: if it's just a filename, assume database/ligands
         lig_path = ref_ligand
         if lig_path and not os.path.isabs(lig_path) and not os.path.dirname(lig_path):
             lig_dir = os.path.join(self.uploads_dir, 'ligands')
@@ -240,40 +241,54 @@ class DiffSBDDRunner:
             if os.path.isfile(cand):
                 lig_path = cand
 
+        target_name = Path(pdb_path).stem
+        outfile = os.path.join(outdir, f"samples_{target_name}.sdf")
+        os.makedirs(outdir, exist_ok=True)
+
         cmd = [
             self.python_path,
-            os.path.join(self.repo_path, 'generate_ligands.py'),
-            self.checkpoint_path,
-            '--pdbfile', pdb_path,
-            '--outfile', outfile,
-            '--ref_ligand', lig_path,
-            '--n_samples', str(int(n_samples)),
+            '-m', 'flowr.gen.generate_from_pdb',
+            '--pdb_file', pdb_path,
+            '--ligand_file', lig_path,
+            '--arch', 'pocket',
+            '--pocket_type', 'holo',
+            '--cut_pocket',
+            '--pocket_cutoff', '7',
+            '--gpus', '1',
+            '--num_workers', str(int(num_workers)),
+            '--batch_cost', str(int(batch_cost)),
+            '--ckpt_path', self.checkpoint_path,
+            '--save_dir', outdir,
+            '--max_sample_iter', '20',
+            '--coord_noise_scale', str(coord_noise_scale),
+            '--sample_n_molecules_per_target', str(int(n_samples)),
+            '--categorical_strategy', 'uniform-sample',
+            '--filter_valid_unique',
+            '--filter_diversity',
+            '--diversity_threshold', '0.7',
         ]
-        if num_nodes_lig is not None:
-            cmd += ['--num_nodes_lig', str(int(num_nodes_lig))]
         if timesteps is not None:
-            cmd += ['--timesteps', str(int(timesteps))]
-        if resamplings:
-            cmd += ['--resamplings', str(int(resamplings))]
-        if jump_length:
-            cmd += ['--jump_length', str(int(jump_length))]
-        if keep_all_fragments:
-            cmd += ['--all_frags']
-        if sanitize:
-            cmd += ['--sanitize']
-        if relax:
-            cmd += ['--relax']
+            cmd += ['--integration_steps', str(int(timesteps))]
+        # Corrector iterations are disabled: the available checkpoint expects
+        # unmasked categorical interpolation and will assert otherwise.
 
-        job = DiffSBDDJob(id=job_id, state='running', message='Starting DiffSBDD...', n_samples=n_samples,
+        job = DiffSBDDJob(id=job_id, state='running', message='Starting Flowr...', n_samples=n_samples,
                            outfile=outfile, log_file=log_file)
         self.jobs[job_id] = job
+
+        env = os.environ.copy()
+        env['PYTHONPATH'] = (
+            f"{self.repo_path}:{env.get('PYTHONPATH', '')}"
+            if env.get('PYTHONPATH')
+            else str(self.repo_path)
+        )
 
         def _run():
             try:
                 with open(log_file, 'w', encoding='utf-8', errors='ignore') as lf:
                     lf.write('Command: ' + ' '.join([f'"{c}"' if ' ' in str(c) else str(c) for c in cmd]) + '\n')
                     lf.flush()
-                    proc = subprocess.Popen(cmd, cwd=self.repo_path, stdout=lf, stderr=subprocess.STDOUT, shell=False)
+                    proc = subprocess.Popen(cmd, cwd=self.repo_path, stdout=lf, stderr=subprocess.STDOUT, shell=False, env=env)
                     job.proc = proc
                     ret = proc.wait()
                 job.finished_at = time.time()
@@ -333,7 +348,7 @@ class DiffSBDDRunner:
                     tail = ''.join(lines[-20:])
         except Exception:
             pass
-        # Build a URL for download relative to /uploads route
+        # Build a URL for download relative to /database route
         rel_outfile = os.path.relpath(job.outfile, self.uploads_dir).replace('\\', '/')
         return {
             'exists': True,
@@ -342,7 +357,7 @@ class DiffSBDDRunner:
             'message': job.message,
             'progress': progress,
             'molecules': mols,
-            'outfile_url': f"/uploads/{rel_outfile}" if os.path.isfile(job.outfile) else None,
+            'outfile_url': f"/database/{rel_outfile}" if os.path.isfile(job.outfile) else None,
             'log_tail': tail,
         }
 
@@ -422,31 +437,6 @@ class DiffSBDDRunner:
             return None
         except Exception as e:
             logger.exception('Index conversion error: %s', e)
-            return None
-        sdf = job.outfile
-        if not os.path.isfile(sdf):
-            return None
-        outdir = os.path.dirname(sdf)
-        pdb = os.path.join(outdir, 'output.pdb')
-        if os.path.isfile(pdb):
-            return pdb
-        # Prepare a tiny RDKit script
-        script = (
-            "import sys; from rdkit import Chem; "
-            "mols=[m for m in Chem.SDMolSupplier(sys.argv[1], removeHs=False) if m]; "
-            "assert mols, 'No molecules in SDF'; "
-            "mol = mols[0]; "
-            "Chem.MolToPDBFile(mol, sys.argv[2])"
-        )
-        try:
-            ret = subprocess.run([self.python_path, '-c', script, sdf, pdb], cwd=self.repo_path,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-            if ret.returncode == 0 and os.path.isfile(pdb):
-                return pdb
-            logger.error('RDKit conversion failed: rc=%s, err=%s', ret.returncode, ret.stderr)
-            return None
-        except Exception as e:
-            logger.exception('RDKit conversion error: %s', e)
             return None
 
 

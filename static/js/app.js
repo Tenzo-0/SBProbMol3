@@ -110,6 +110,11 @@ class MoleculeAI {
             });
         });
 
+        // Theme change -> update NGL background
+        document.addEventListener('sbprob-theme-changed', (e) => {
+            this.setStageBackgroundForTheme(e?.detail?.theme);
+        });
+
         // Export buttons
         document.querySelectorAll('[class*="btn"][class*="export"], [class*="btn"][class*="download"], [class*="btn"][class*="share"]').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -329,9 +334,17 @@ class MoleculeAI {
         container.innerHTML = '';
         // Create NGL Stage
         this.nglStage = new NGL.Stage('protein-viewer', { backgroundColor: "#000010" });
+        this.setStageBackgroundForTheme();
         window.addEventListener('resize', () => {
             this.nglStage.handleResize();
         });
+    }
+
+    setStageBackgroundForTheme(theme) {
+        if (!this.nglStage) return;
+        const isLight = typeof theme === 'string' ? theme === 'light' : document.documentElement.classList.contains('theme-light');
+        const bg = isLight ? '#ffffff' : '#0b0b0d';
+        this.nglStage.setParameters({ backgroundColor: bg });
     }
 
     // --- Ligand selection helpers (Step 2) ---
@@ -397,8 +410,8 @@ class MoleculeAI {
         try {
             this.nglStage.removeAllComponents();
             this.currentLigandComp = null;
-            // Try load from uploads using provided filename first, then PDBID.pdb
-            const localUrl = filename ? `/uploads/${filename}` : `/uploads/${pdbId}.pdb`;
+            // Try load from database using provided filename first, then PDBID.pdb
+            const localUrl = filename ? `/database/${filename}` : `/database/${pdbId}.pdb`;
             let comp;
             try {
                 comp = await this.nglStage.loadFile(localUrl, { ext: 'pdb' });
@@ -908,7 +921,8 @@ MoleculeAI.prototype.resetSamplingDefaults = function() {
     v('n-samples',10); const nsv=document.getElementById('n-samples-value'); if(nsv) nsv.textContent='10';
     // Ensure slider max reflects new UI limit (100)
     const nsEl = document.getElementById('n-samples'); if (nsEl) nsEl.max = '100';
-    v('legend-modes',20); v('model','Conditional model (Binding MOAD)');
+    v('batch-cost',20); v('num-workers',12); v('coord-noise-scale',0.1);
+    v('model','Conditional model (Binding MOAD)');
     v('timesteps',100); const tsv=document.getElementById('timesteps-value'); if(tsv) tsv.textContent='100';
     v('resamplings',1); v('jump-length',1);
     const k=document.getElementById('keep-all-fragments'); if(k) k.checked=false;
@@ -1028,9 +1042,11 @@ MoleculeAI.prototype.showResultsPicker = async function(jobId){
             list.innerHTML = mols.map(m=>
                 `<button data-idx="${m.index}" class="btn btn-outline-primary btn-sm w-100 mb-1 text-start">#${m.index+1} - ${m.title || 'molecule'}</button>`
             ).join('');
+            this.lastResultIndex = 0;
             list.querySelectorAll('button[data-idx]').forEach(btn=>{
                 btn.addEventListener('click', async ()=>{
                     const idx = parseInt(btn.getAttribute('data-idx'));
+                    this.lastResultIndex = idx;
                     await this.overlayGeneratedLigand(jobId, idx);
                     this.setWorkflowStep(4);
                 });
@@ -1062,7 +1078,48 @@ MoleculeAI.prototype.showResultsPicker = async function(jobId){
         if (dl) {
             dl.href = `/diffsbdd/result/${jobId}/sdf`;
             dl.classList.remove('d-none');
+            dl.removeAttribute('disabled');
         }
+        // Enable routing buttons for downstream steps (MD / Advanced)
+        const btnMd = document.getElementById('send-to-md');
+        const btnAdv = document.getElementById('send-to-advanced');
+
+        const sendToMd = async () => {
+            if (!btnMd) return;
+            btnMd.disabled = true;
+            btnMd.textContent = 'Sending…';
+            try {
+                const res = await fetch('/md/import_generated', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ job_id: jobId })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data?.error || 'Failed to send to MD');
+                this.showNotification(`Sent ${data.count} ligands to MD`, 'success');
+                // Navigate to MD so user can load them
+                window.location.href = '/md';
+            } catch (err) {
+                console.error(err);
+                this.showNotification(err.message || 'Failed to send to MD', 'danger');
+            } finally {
+                btnMd.disabled = false;
+                btnMd.textContent = 'Send to MD';
+            }
+        };
+
+        const navigateMd = (mode) => {
+            const idx = this.lastResultIndex ?? 0;
+            const url = `/md?job_id=${encodeURIComponent(jobId)}&index=${idx}` + (mode ? `&mode=${encodeURIComponent(mode)}` : '');
+            window.location.href = url;
+        };
+        const enableRouteBtn = (btn, mode, handlerOverride) => {
+            if (!btn) return;
+            btn.disabled = false;
+            btn.onclick = handlerOverride ? handlerOverride : () => navigateMd(mode);
+        };
+        enableRouteBtn(btnMd, 'md', sendToMd);
+        enableRouteBtn(btnAdv, 'advanced');
         // Navigate to results panel
         this.setWorkflowStep(4);
     } catch (e) {

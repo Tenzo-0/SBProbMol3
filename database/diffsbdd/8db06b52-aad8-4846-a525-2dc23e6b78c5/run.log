@@ -1,0 +1,36 @@
+Command: /home/user/anaconda3/envs/flowr_root/bin/python -m flowr.gen.generate_from_pdb --pdb_file /home/user/SBProbMol3_1/database/proteins/3rfm.pdb --ligand_file /home/user/SBProbMol3_1/database/ligands/3rfm_B_CFF.sdf --arch pocket --pocket_type holo --cut_pocket --pocket_cutoff 7 --gpus 1 --num_workers 12 --batch_cost 20 --ckpt_path /home/user/flowr_root_v2.ckpt --save_dir /home/user/SBProbMol3_1/database/diffsbdd/8db06b52-aad8-4846-a525-2dc23e6b78c5 --max_sample_iter 20 --coord_noise_scale 0.1 --sample_n_molecules_per_target 10 --categorical_strategy uniform-sample --filter_valid_unique --filter_diversity --diversity_threshold 0.7 --integration_steps 100
+/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/prolif/datafiles.py:3: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/MDAnalysis/topology/tables.py:52: DeprecationWarning: Deprecated in version 2.8.0
+MDAnalysis.topology.tables has been moved to MDAnalysis.guesser.tables. This import point will be removed in MDAnalysis version 3.0.0
+  warnings.warn(wmsg, category=DeprecationWarning)
+<frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+<frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+<frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/Bio/pairwise2.py:278: BiopythonDeprecationWarning: Bio.pairwise2 has been deprecated, and we intend to remove it in a future release of Biopython. As an alternative, please consider using Bio.Align.PairwiseAligner as a replacement, and contact the Biopython developers if you still need the Bio.pairwise2 module.
+  warnings.warn(
+[02:42:27] Warning: molecule is tagged as 2D, but at least one Z coordinate is not zero. Marking the mol as 3D.
+Seed set to 42
+Using model stored at /home/user/flowr_root_v2.ckpt
+Loading model...
+Building model vocabs...
+Vocabs complete.
+Loading pretrained checkpoint from /home/user/flowr_root_v2.ckpt...
+Done.
+Model complete.
+
+Starting sampling...
+
+...Sampling iteration 1...Sampling:   0%|          | 0/1 [00:00<?, ?it/s]Sampling: 100%|██████████| 1/1 [00:09<00:00,  9.82s/it]                                                       Seed set to 43
+Validity rate: 1.0
+Uniqueness rate: 0.6
+Diversity rate: 1.0
+...Sampling iteration 2...Sampling:   0%|          | 0/1 [00:00<?, ?it/s]Sampling: 100%|██████████| 1/1 [00:07<00:00,  7.55s/it]                                                       Validity rate: 1.0
+Uniqueness rate: 0.9
+Diversity rate: 0.93
+
+ Run time=17.49s for 10 molecules 
+
+Protonating generated ligands...
+Samples saved to /home/user/SBProbMol3_1/database/diffsbdd/8db06b52-aad8-4846-a525-2dc23e6b78c5
+Sampling finished.

@@ -84,7 +84,7 @@ flask run #if you want to run it in debug mode, add [--debug]
 - GET `/diffsbdd/result/<job_id>/sdf` — download generated SDF.
 - GET `/diffsbdd/result/<job_id>/list` — list molecules in SDF.
 - GET `/diffsbdd/result/<job_id>/pdb/<index>` — serve PDB for a molecule index.
-- GET `/uploads/<filename>` — serve user-uploaded PDBs.
+- GET `/database/<filename>` — serve user-uploaded PDBs.
 
 ## Project structure
 ```
@@ -99,20 +99,20 @@ static/
 templates/
   base.html
   index.html
-uploads/             # user uploads and job artifacts
+database/            # user uploads and job artifacts
 ```
 
 ## Deployment (production)
 - Use Gunicorn (or uvicorn+ASGI wrapper) behind NGINX.
 - Point NGINX to serve `/static` directly and reverse-proxy to the Flask app.
-- Ensure `uploads/` is writable by the app service user.
+- Ensure `database/` is writable by the app service user.
 - Set the DIFFSBDD_* env vars in your systemd unit or process manager.
 
 ## Troubleshooting
 - RDKit not found: make sure `DIFFSBDD_PYTHON` points to the conda env that has RDKit.
 - PyTorch/torch-scatter mismatch: install versions matching your CUDA (11.8 suggested).
-- No results listed: check `uploads/diffsbdd/<job_id>/run.log` and the configured checkpoint path.
-- 3D viewer blank: verify network access to `/uploads/<file>.pdb` or fallback to `rcsb://<pdbid>`.
+- No results listed: check `database/diffsbdd/<job_id>/run.log` and the configured checkpoint path.
+- 3D viewer blank: verify network access to `/database/<file>.pdb` or fallback to `rcsb://<pdbid>`.
 
 ## Acknowledgements
 - DiffSBDD: Diffusion-based SBDD framework for conditional ligand generation.

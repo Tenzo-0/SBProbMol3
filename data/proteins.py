@@ -1,7 +1,7 @@
 """
 Protein data utilities.
 
-This version derives proteins dynamically from files in the uploads/ folder,
+This version derives proteins dynamically from files in the database/ folder,
 so there's no in-memory PROTEINS_DATA to maintain.
 """
 
@@ -9,13 +9,13 @@ import os
 
 
 def _uploads_dir():
-    # Base uploads directory: data/proteins.py -> project_root/uploads
+    # Base storage directory: data/proteins.py -> project_root/database
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    return os.path.normpath(os.path.join(root, 'uploads'))
+    return os.path.normpath(os.path.join(root, 'database'))
 
 
 def _proteins_dir():
-    # Proteins are stored under uploads/proteins
+    # Proteins are stored under database/proteins
     return os.path.join(_uploads_dir(), 'proteins')
 
 
@@ -37,7 +37,7 @@ def _protein_from_filename(filename: str):
 
 
 def get_proteins():
-    """Return all available protein structures (derived from uploads/*.pdb)."""
+    """Return all available protein structures (derived from database/*.pdb)."""
     uploads = _proteins_dir()
     try:
         files = [f for f in os.listdir(uploads) if f.lower().endswith('.pdb')]
@@ -140,7 +140,7 @@ def find_similar_structures(protein_id):
 def add_new_protein(protein_data):
     """No-op placeholder retained for compatibility.
 
-    Proteins are discovered from files in uploads/, so there's nothing to add here.
+    Proteins are discovered from files in database/, so there's nothing to add here.
     Returns the input unchanged.
     """
     # Ensure an id field exists for downstream code that may rely on it

@@ -1,0 +1,39 @@
+Command: /home/user/anaconda3/envs/flowr_root/bin/python -m flowr.gen.generate_from_pdb --pdb_file /home/user/SBProbMol3_1/database/proteins/3rfm.pdb --ligand_file /home/user/SBProbMol3_1/database/ligands/3rfm_B_CFF.sdf --arch pocket --pocket_type holo --cut_pocket --pocket_cutoff 7 --gpus 1 --num_workers 12 --batch_cost 20 --ckpt_path /home/user/flowr_root_v2.ckpt --save_dir /home/user/SBProbMol3_1/database/diffsbdd/39c4610d-9f1c-4de9-9a8a-bfc0821b2dde --max_sample_iter 20 --coord_noise_scale 0.1 --sample_n_molecules_per_target 10 --categorical_strategy uniform-sample --filter_valid_unique --filter_diversity --diversity_threshold 0.7 --integration_steps 100
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/flowr_root/flowr/gen/generate_from_pdb.py", line 15, in <module>
+    import flowr.gen.utils as util
+  File "/home/user/flowr_root/flowr/gen/utils.py", line 18, in <module>
+    import flowr.scriptutil as util
+  File "/home/user/flowr_root/flowr/scriptutil.py", line 33, in <module>
+    import flowr.util.functional as smolF
+  File "/home/user/flowr_root/flowr/util/functional.py", line 9, in <module>
+    import biotite.structure.io.pdb as pdb
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/biotite/structure/__init__.py", line 107, in <module>
+    from .atoms import *
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/biotite/structure/atoms.py", line 29, in <module>
+    from biotite.structure.bonds import BondList
+  File "src/biotite/structure/bonds.pyx", line 24, in init biotite.structure.bonds
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/__init__.py", line 46, in <module>
+    from networkx import algorithms
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/algorithms/__init__.py", line 7, in <module>
+    from networkx.algorithms.centrality import *
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/algorithms/centrality/__init__.py", line 13, in <module>
+    from .load import *
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/algorithms/centrality/load.py", line 10, in <module>
+    @nx._dispatchable(edge_attrs="weight")
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/utils/backends.py", line 480, in __new__
+    self = argmap(_do_nothing)(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/utils/decorators.py", line 788, in __call__
+    func.__doc__ = f.__doc__
+                   ^^^^^^^^^
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/utils/backends.py", line 492, in __doc__
+    rv = self._cached_doc = self._make_doc()
+                            ^^^^^^^^^^^^^^^^
+  File "/home/user/anaconda3/envs/flowr_root/lib/python3.12/site-packages/networkx/utils/backends.py", line 1870, in _make_doc
+    def _make_doc(self):
+
+KeyboardInterrupt

@@ -1,0 +1,27 @@
+parameter_file boron-silicon-atom_par.dat
+npts 46 42 42
+gridfld samples_3rfm_vina.maps.fld
+spacing 0.375
+receptor_types HD C A N NA OA F P SA S Cl Br I Mg Ca Mn Fe Zn
+ligand_types HD C A N NA OA F P SA S Cl Br I Si B
+receptor samples_3rfm_vina.pdbqt
+gridcenter 8.176 -33.617 -32.788
+smooth 0.500
+map samples_3rfm_vina.HD.map
+map samples_3rfm_vina.C.map
+map samples_3rfm_vina.A.map
+map samples_3rfm_vina.N.map
+map samples_3rfm_vina.NA.map
+map samples_3rfm_vina.OA.map
+map samples_3rfm_vina.F.map
+map samples_3rfm_vina.P.map
+map samples_3rfm_vina.SA.map
+map samples_3rfm_vina.S.map
+map samples_3rfm_vina.Cl.map
+map samples_3rfm_vina.Br.map
+map samples_3rfm_vina.I.map
+map samples_3rfm_vina.Si.map
+map samples_3rfm_vina.B.map
+elecmap samples_3rfm_vina.e.map
+dsolvmap samples_3rfm_vina.d.map
+dielectric -42.000
